@@ -2,21 +2,31 @@
 
 #include <algorithm>
 #include <cmath>
+#include <execution>
 #include <functional>
 #include <numbers>
 #include <optional>
-#include <span>
 
 namespace hikariuni {
 namespace {
 
 using Rgb = std::array<double, 3>;
 
+// [0, h) を rows 行ずつの帯に分け、帯ごとに fn(y0, y1) を並列に呼ぶ（帯どうしは同じ場所に書かないこと）
+template<typename F>
+void ForEachStrip(int h, int rows, F&& fn) {
+  std::vector<int> starts;
+  for (int y = 0; y < h; y += rows)
+    starts.push_back(y);
+  std::for_each(std::execution::par, starts.begin(), starts.end(), [&](int y0) { fn(y0, std::min(h, y0 + rows)); });
+}
+
+// dw × dh への面積平均の縮小のうち、行 [y0, y1) だけを作る
 template<typename T>
-RgbImage ResampleT(const PixelView& s, int dw, int dh, double toByte) {
-  RgbImage out{dw, dh, std::vector<float>(size_t(dw) * dh * 3)};
+RgbImage ResampleT(const PixelView& s, int dw, int dh, int y0, int y1, double toByte) {
+  RgbImage out{dw, y1 - y0, std::vector<float>(size_t(dw) * (y1 - y0) * 3)};
   const auto dst = out.view();
-  for (int y = 0; y < dh; y++) {
+  for (int y = y0; y < y1; y++) {
     const int sy0 = int(int64_t(y) * s.h / dh), sy1 = std::max(sy0 + 1, int(int64_t(y + 1) * s.h / dh));
     for (int x = 0; x < dw; x++) {
       const int sx0 = int(int64_t(x) * s.w / dw), sx1 = std::max(sx0 + 1, int(int64_t(x + 1) * s.w / dw));
@@ -29,10 +39,15 @@ RgbImage ResampleT(const PixelView& s, int dw, int dh, double toByte) {
       }
       const double n = double(sy1 - sy0) * (sx1 - sx0);
       for (int c = 0; c < 3; c++)
-        dst[y, x, c] = float(sum[c] / n * toByte);
+        dst[y - y0, x, c] = float(sum[c] / n * toByte);
     }
   }
   return out;
+}
+
+uint32_t Pack(float r, float g, float b) {
+  auto byte = [](float v) { return uint32_t(std::clamp(v + 0.5f, 0.f, 255.f)); };
+  return byte(r) << 16 | byte(g) << 8 | byte(b);
 }
 
 // バッファの中の矩形 [x0, x1) × [y0, y1)
@@ -112,13 +127,12 @@ void Ray(LightBuffer& b, double x, double y, double cs, double sn, const Rgb& le
 template<typename T>
 void ApplyT(const PixelView& in, void* out, int64_t outRowBytes, const std::vector<Light>& lights, const Params& p,
             float maxValue) {
-  const float scale  = maxValue / 255;
-  const double unit  = std::min(in.w, in.h) / 1000.0;
-  const bool alpha   = in.alphaWritable && in.planes > in.colors; // 色の次のプレーンが透明度
-  constexpr int kRow = 256;                                       // メモリを抑えるため 256 行ずつ描く
-  for (int y0 = 0; y0 < in.h; y0 += kRow) {
-    LightBuffer buf{0, y0, in.w, std::min(kRow, in.h - y0)};
-    buf.rgb.assign(size_t(buf.w) * buf.h * 3, 0.f);
+  const float scale = maxValue / 255;
+  const double unit = std::min(in.w, in.h) / 1000.0;
+  const bool alpha  = in.alphaWritable && in.planes > in.colors; // 色の次のプレーンが透明度
+  // メモリを抑えるため 64 行ずつの帯に分けて描き、帯は並列に処理する
+  ForEachStrip(in.h, 64, [&](int y0, int y1) {
+    LightBuffer buf{0, y0, in.w, y1 - y0, std::vector<float>(size_t(in.w) * (y1 - y0) * 3)};
     Render(lights, p, 1.0, unit, buf);
     const auto light = buf.view();
     for (int y = 0; y < buf.h; y++) {
@@ -148,13 +162,46 @@ void ApplyT(const PixelView& in, void* out, int64_t outRowBytes, const std::vect
           dst[c] = src[c];
       }
     }
-  }
+  });
 }
 
 } // namespace
 
+RgbImage ResampleRows(const PixelView& src, int dw, int dh, int y0, int y1) {
+  return src.depth == 8 ? ResampleT<uint8_t>(src, dw, dh, y0, y1, 1.0)
+                        : ResampleT<uint16_t>(src, dw, dh, y0, y1, 255.0 / 32768);
+}
+
 RgbImage Resample(const PixelView& src, int dw, int dh) {
-  return src.depth == 8 ? ResampleT<uint8_t>(src, dw, dh, 1.0) : ResampleT<uint16_t>(src, dw, dh, 255.0 / 32768);
+  return ResampleRows(src, dw, dh, 0, dh);
+}
+
+std::vector<uint32_t> PreviewBase(const PixelView& image, int w, int h) {
+  std::vector<uint32_t> out(size_t(w) * h);
+  ForEachStrip(h, 64, [&](int y0, int y1) {
+    const RgbImage part = ResampleRows(image, w, h, y0, y1);
+    const auto px       = part.view();
+    for (int y = y0; y < y1; y++)
+      for (int x = 0; x < w; x++)
+        out[size_t(y) * w + x] = Pack(px[y - y0, x, 0], px[y - y0, x, 1], px[y - y0, x, 2]);
+  });
+  return out;
+}
+
+void ComposePreview(std::span<const uint32_t> base, int w, int h, double k, double unit,
+                    const std::vector<Light>& lights, const Params& p, std::span<uint32_t> out) {
+  ForEachStrip(h, 64, [&](int y0, int y1) {
+    LightBuffer buf{0, y0, w, y1 - y0, std::vector<float>(size_t(w) * (y1 - y0) * 3)};
+    Render(lights, p, k, unit * k, buf);
+    const auto light = buf.view();
+    for (int y = y0; y < y1; y++)
+      for (int x = 0; x < w; x++) {
+        const size_t i   = size_t(y) * w + x;
+        const uint32_t b = p.raysOnly ? 0 : base[i]; // 光芒のみなら透明な部分を黒で見せる
+        out[i]           = Pack(float(b >> 16 & 255) + light[y - y0, x, 0], float(b >> 8 & 255) + light[y - y0, x, 1],
+                                float(b & 255) + light[y - y0, x, 2]);
+      }
+  });
 }
 
 RgbImage Resample(const RgbImage& src, int dw, int dh) {
@@ -165,7 +212,7 @@ RgbImage Resample(const RgbImage& src, int dw, int dh) {
                        .depth    = 0, // ResampleT<float> では使わない
                        .w        = src.w,
                        .h        = src.h};
-  return ResampleT<float>(view, dw, dh, 1.0);
+  return ResampleT<float>(view, dw, dh, 0, dh, 1.0);
 }
 
 std::vector<Light> Detect(const RgbImage& img, const Params& p, double scale) {

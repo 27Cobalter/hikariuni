@@ -231,6 +231,47 @@ TEST(Apply, GrayAddsAverageLight) {
   EXPECT_GT(out[center + 1], 0); // 光源の中心は不透明度あり
 }
 
+// 行を分けて縮小しても、まとめて縮小したのと同じになる（帯ごとに並列で作るため）
+TEST(Resample, RowsMatchWholeImage) {
+  std::vector<uint8_t> px(37 * 23 * 3);
+  for (size_t i = 0; i < px.size(); i++)
+    px[i] = uint8_t(i * 7);
+  const PixelView view = Pixels(px, 37, 23, 3, 3);
+  const RgbImage whole = Resample(view, 15, 9);
+  const RgbImage part  = ResampleRows(view, 15, 9, 4, 7);
+  ASSERT_EQ(part.h, 3);
+  for (int y = 4; y < 7; y++)
+    for (int x = 0; x < 15; x++)
+      for (int c = 0; c < 3; c++)
+        EXPECT_FLOAT_EQ((part.view()[y - 4, x, c]), (whole.view()[y, x, c]));
+}
+
+// プレビューの合成は、等倍なら Apply（8bit RGB）と同じ結果になる。光芒のみなら黒の上に描く
+TEST(ComposePreview, MatchesApplyAtFullSize) {
+  const int w = 40, h = 30;
+  std::vector<uint8_t> rgb(w * h * 3);
+  for (size_t i = 0; i < rgb.size(); i++)
+    rgb[i] = uint8_t(i % 200);
+  const PixelView view = Pixels(rgb, w, h, 3, 3);
+  const std::vector<Light> light{
+      {20.5, 15.5, 1, 1, 0.5f, 0.25f}
+  };
+  Params p;
+  p.glow = 200, p.len = 400;
+  for (const bool raysOnly : {false, true}) {
+    p.raysOnly = raysOnly;
+    std::vector<uint8_t> applied(rgb.size());
+    Apply(view, applied.data(), w * 3, light, p);
+    const auto base = PreviewBase(view, w, h);
+    std::vector<uint32_t> preview(base.size());
+    ComposePreview(base, w, h, 1.0, std::min(w, h) / 1000.0, light, p, preview);
+    for (int i = 0; i < w * h; i++) {
+      EXPECT_NEAR(int(preview[i] >> 16 & 255), applied[i * 3], 1) << "pixel " << i;
+      EXPECT_NEAR(int(preview[i] & 255), applied[i * 3 + 2], 1) << "pixel " << i;
+    }
+  }
+}
+
 // 縮小済みの RgbImage からも面積平均で縮小できる
 TEST(Resample, AveragesRgbImage) {
   const RgbImage src{

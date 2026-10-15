@@ -6,16 +6,20 @@
 
 // コントロールの位置は dialog.cpp の Layout で決める（パラメーターの行も kParams から作る）。
 // ここの大きさがダイアログの最小サイズになる
-IDD_MAIN DIALOGEX 0, 0, 560, 325
+IDD_MAIN DIALOGEX 0, 0, 620, 325
 STYLE DS_CENTER | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MAXIMIZEBOX | WS_CLIPCHILDREN
 CAPTION "Hikariuni"
 FONT 9, "Yu Gothic UI"
 BEGIN
     CONTROL         "", IDC_PREVIEW, "Static", SS_OWNERDRAW, 0, 0, 0, 0
-    LTEXT           "左クリック: 光源を追加　右クリック: 除外　等倍表示中はドラッグで移動", IDC_HINT, 0, 0, 0, 0
+    SCROLLBAR       IDC_HSCROLL, 0, 0, 0, 0, SBS_HORZ
+    SCROLLBAR       IDC_VSCROLL, 0, 0, 0, 0, SBS_VERT
+    LTEXT           "クリック: 光源を追加　Alt+クリック: 除外　Ctrl+ホイール: 拡大縮小　中ボタンのドラッグ: 移動", IDC_HINT, 0, 0, 0, 0
     PUSHBUTTON      "初期値に戻す", IDC_RESET, 0, 0, 0, 0
     AUTOCHECKBOX    "光芒のみ出力（透過）", IDC_RAYS_ONLY, 0, 0, 0, 0, WS_TABSTOP
-    AUTOCHECKBOX    "等倍表示", IDC_ZOOM, 0, 0, 0, 0, WS_TABSTOP
+    PUSHBUTTON      "全体表示", IDC_FIT, 0, 0, 0, 0
+    LTEXT           "", IDC_ZOOM_TEXT, 0, 0, 0, 0
+    PUSHBUTTON      "", IDC_THEME, 0, 0, 0, 0
     DEFPUSHBUTTON   "OK", IDOK, 0, 0, 0, 0
     PUSHBUTTON      "キャンセル", IDCANCEL, 0, 0, 0, 0
 END

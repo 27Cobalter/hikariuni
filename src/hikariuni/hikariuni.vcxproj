@@ -37,7 +37,7 @@
       <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
-      <LanguageStandard>stdcpp17</LanguageStandard>
+      <LanguageStandard>stdcpp23</LanguageStandard>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <!-- SDK ヘッダーは WIN32=1 で Windows 用の分岐を選ぶ（PIActions.h の MSWindows）。
            ISOLATION_AWARE_ENABLED はダイアログで DLL のマニフェスト（comctl32 v6）を使うため -->

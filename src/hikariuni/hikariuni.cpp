@@ -12,17 +12,19 @@
 
 using namespace hikariuni;
 
-static bool Use32(FilterRecord* fr) {
+namespace {
+
+bool Use32(const FilterRecord* fr) {
   return fr->bigDocumentData && fr->bigDocumentData->PluginUsing32BitCoordinates;
 }
 
-static VRect FilterRect(FilterRecord* fr) {
+VRect FilterRect(const FilterRecord* fr) {
   if (Use32(fr)) return fr->bigDocumentData->filterRect32;
   const Rect& r = fr->filterRect;
-  return {r.top, r.left, r.bottom, r.right};
+  return {.top = r.top, .left = r.left, .bottom = r.bottom, .right = r.right};
 }
 
-static void SetRects(FilterRecord* fr, const VRect& v) {
+void SetRects(FilterRecord* fr, const VRect& v) {
   if (Use32(fr)) {
     fr->bigDocumentData->inRect32 = fr->bigDocumentData->outRect32 = v;
     return;
@@ -30,12 +32,12 @@ static void SetRects(FilterRecord* fr, const VRect& v) {
   fr->inRect = fr->outRect = Rect{int16(v.top), int16(v.left), int16(v.bottom), int16(v.right)};
 }
 
-static HWND Owner(FilterRecord* fr) {
-  auto pd = static_cast<PlatformData*>(fr->platformData);
+HWND Owner(const FilterRecord* fr) {
+  const auto pd = static_cast<const PlatformData*>(fr->platformData);
   return pd ? reinterpret_cast<HWND>(pd->hwnd) : nullptr;
 }
 
-static void DoStart(FilterRecord* fr, int16* result) {
+void DoStart(FilterRecord* fr, int16* result) {
   if (fr->depth != 8 && fr->depth != 16) {
     *result = filterBadMode;
     return;
@@ -50,11 +52,18 @@ static void DoStart(FilterRecord* fr, int16* result) {
   fr->inHiPlane = fr->outHiPlane = int16(fr->planes - 1);
   if ((*result = fr->advanceState()) != noErr) return;
 
-  // 透明度が保護されている（ホストが元の透明度を残す）ときは、透明度を書き換えない
-  const bool alphaWritable = fr->filterCase != filterCaseProtectedTransparencyNoSelection &&
-                             fr->filterCase != filterCaseProtectedTransparencyWithSelection;
-  const PixelView in{fr->inData, fr->inRowBytes,   fr->planes,       gray ? 1 : 3,
-                     fr->depth,  r.right - r.left, r.bottom - r.top, alphaWritable};
+  const PixelView in{
+      .data     = fr->inData,
+      .rowBytes = fr->inRowBytes,
+      .planes   = fr->planes,
+      .colors   = gray ? 1 : 3,
+      .depth    = fr->depth,
+      .w        = r.right - r.left,
+      .h        = r.bottom - r.top,
+      // 透明度が保護されている（ホストが元の透明度を残す）ときは、透明度を書き換えない
+      .alphaWritable = fr->filterCase != filterCaseProtectedTransparencyNoSelection &&
+                       fr->filterCase != filterCaseProtectedTransparencyWithSelection,
+  };
   // 光源の検出は長辺 2000px に縮小して行う
   const double ds    = std::min(1.0, 2000.0 / std::max(in.w, in.h));
   const RgbImage det = Resample(in, std::max(1, int(std::lround(in.w * ds))), std::max(1, int(std::lround(in.h * ds))));
@@ -72,6 +81,8 @@ static void DoStart(FilterRecord* fr, int16* result) {
   Apply(in, fr->outData, fr->outRowBytes, lights, p);
   SetRects(fr, VRect{}); // 空の矩形 = もう要求しない
 }
+
+} // namespace
 
 DLLExport MACPASCAL void PluginMain(const int16 selector, FilterRecordPtr fr, intptr_t* /*data*/, int16* result) {
   *result = noErr;

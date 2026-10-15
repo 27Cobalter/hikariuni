@@ -1,7 +1,9 @@
 // 光芒エフェクトの本体（光源の検出と描画）。Windows や SDK には依存しない
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <mdspan>
 #include <vector>
 
 namespace hikariuni {
@@ -32,7 +34,7 @@ struct ParamInfo {
   bool detect; // 変えたら光源の検出をやり直す
 };
 
-inline constexpr ParamInfo kParams[] = {
+inline constexpr auto kParams = std::to_array<ParamInfo>({
     {L"thr",      L"明るさ",                     0,   255, 1,    &Params::thr,      true },
     {L"contrast", L"コントラスト（周囲との差）", 5,   200, 1,    &Params::contrast, true },
     {L"size",     L"最大サイズ",                 1,   50,  1,    &Params::size,     true },
@@ -46,7 +48,7 @@ inline constexpr ParamInfo kParams[] = {
     {L"power",    L"強さ",                       0,   2,   0.05, &Params::power,    false},
     {L"disp",     L"虹色（分散）",               0,   1,   0.05, &Params::disp,     false},
     {L"glow",     L"ハロー",                     0,   200, 1,    &Params::glow,     false},
-};
+});
 
 // 光源。座標は元画像の px。e は最も強い光源を 1 とした強さ。色は最大チャンネルが 1 になるよう正規化
 struct Light {
@@ -63,10 +65,14 @@ struct Edits {
   std::vector<Point> removed;
 };
 
-// 0〜255 基準の RGB 画像（w * h * 3）
+// 0〜255 基準の RGB 画像。view()[y, x, c] で読み書きする
 struct RgbImage {
   int w = 0, h = 0;
-  std::vector<float> px;
+  std::vector<float> px; // w * h * 3
+
+  auto view(this auto& self) {
+    return std::mdspan(self.px.data(), self.h, self.w, 3);
+  }
 };
 
 // ホストの画素データ。全プレーンをインターリーブで持つ
@@ -80,27 +86,33 @@ struct PixelView {
   bool alphaWritable = true; // 透明度プレーンを書き換えてよいか（ホストが透明度を保護しているときは false）
 };
 
-// 光を加算するバッファ。描画先座標の (x0, y0) から w * h の範囲。値は 0〜255 基準の RGB
+// 光を加算するバッファ。描画先座標の (x0, y0) から w * h の範囲。値は 0〜255 基準の RGB。
+// view()[y - y0, x - x0, c] で読み書きする
 struct LightBuffer {
   int x0, y0, w, h;
-  std::vector<float> rgb;
+  std::vector<float> rgb; // w * h * 3
+
+  auto view(this auto& self) {
+    return std::mdspan(self.rgb.data(), self.h, self.w, 3);
+  }
 };
 
 // src を dw * dh に面積平均で縮小する
-RgbImage Resample(const PixelView& src, int dw, int dh);
-RgbImage Resample(const RgbImage& src, int dw, int dh);
+[[nodiscard]] RgbImage Resample(const PixelView& src, int dw, int dh);
+[[nodiscard]] RgbImage Resample(const RgbImage& src, int dw, int dh);
 
 // img（元画像を縮小したもの。scale = img.w / 元画像の幅）から光源を探し、強い順に返す
-std::vector<Light> Detect(const RgbImage& img, const Params& p, double scale);
+[[nodiscard]] std::vector<Light> Detect(const RgbImage& img, const Params& p, double scale);
 
 // 強い順に、最小間隔を空けて最大個数まで選ぶ。unit は元画像の短辺 / 1000
-std::vector<Light> Pick(const std::vector<Light>& lights, const Params& p, double unit);
+[[nodiscard]] std::vector<Light> Pick(const std::vector<Light>& lights, const Params& p, double unit);
 
 // 描く光源を決める。Pick したうえで、除外した位置の近く（5 単位以内）の光源を外し、手動の光源を足す
-std::vector<Light> Arrange(const std::vector<Light>& detected, const Params& p, double unit, const Edits& edits);
+[[nodiscard]] std::vector<Light> Arrange(const std::vector<Light>& detected, const Params& p, double unit,
+                                         const Edits& edits);
 
 // (x, y)（元画像座標）に手動で置く光源。色は検出用画像のその付近で最も明るい画素から取る（暗ければ白）
-Light MakeLight(const RgbImage& img, double scale, double x, double y);
+[[nodiscard]] Light MakeLight(const RgbImage& img, double scale, double x, double y);
 
 // lights のハローと光芒を buf に加算する。k は元画像 px → 描画先 px、unit は描画先での短辺 / 1000
 void Render(const std::vector<Light>& lights, const Params& p, double k, double unit, LightBuffer& buf);

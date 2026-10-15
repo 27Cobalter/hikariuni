@@ -26,6 +26,9 @@ Affinity 向けの Photoshop 互換フィルタープラグイン（`.8bf`）。
   - clang-format は VS 同梱: `C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64\bin\clang-format.exe`
   - `*.r` は Rez 構文なので clang-format をかけない。
 - SDK のヘッダーは `#include <PIFilter.h>` のように `<>` で読み込む（`.r` でも同じ）。
+- C++23 で書く。画素の添字は `std::mdspan`（`RgbImage::view()` / `LightBuffer::view()` の `[y, x, c]`）、アルゴリズムは `std::ranges`、文字列の整形は `std::format`、構造体の初期化は designated initializers を使う。
+  - GoogleTest のマクロの引数に `v[y, x, c]` を書くときは `(v[y, x, c])` と括弧で囲む（マクロの引数がカンマで分かれてしまうため）。
+  - `view()` は元のデータを指すので、一時オブジェクトから取らない（`Resample(...).view()` はぶら下がる）。
 - ソースは UTF-8。コメントは日本語。
 
 ## 確認のポイント

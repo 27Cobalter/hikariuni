@@ -42,6 +42,7 @@ static void DoStart(FilterRecord* fr, int16* result) {
   }
   const bool gray = fr->imageMode == plugInModeGrayScale || fr->imageMode == plugInModeGray16;
   const VRect r   = FilterRect(fr);
+  if (r.right <= r.left || r.bottom <= r.top) return; // 処理する範囲がない
 
   // ponytail: 画像全体を一度に要求。巨大画像でホストのメモリが足りないならタイル分割する
   SetRects(fr, r);
@@ -49,22 +50,26 @@ static void DoStart(FilterRecord* fr, int16* result) {
   fr->inHiPlane = fr->outHiPlane = int16(fr->planes - 1);
   if ((*result = fr->advanceState()) != noErr) return;
 
-  const PixelView in{fr->inData, fr->inRowBytes,   fr->planes,      gray ? 1 : 3,
-                     fr->depth,  r.right - r.left, r.bottom - r.top};
+  // 透明度が保護されている（ホストが元の透明度を残す）ときは、透明度を書き換えない
+  const bool alphaWritable = fr->filterCase != filterCaseProtectedTransparencyNoSelection &&
+                             fr->filterCase != filterCaseProtectedTransparencyWithSelection;
+  const PixelView in{fr->inData, fr->inRowBytes,   fr->planes,       gray ? 1 : 3,
+                     fr->depth,  r.right - r.left, r.bottom - r.top, alphaWritable};
   // 光源の検出は長辺 2000px に縮小して行う
   const double ds    = std::min(1.0, 2000.0 / std::max(in.w, in.h));
   const RgbImage det = Resample(in, std::max(1, int(std::lround(in.w * ds))), std::max(1, int(std::lround(in.h * ds))));
 
   Params p = LoadParams();
-  if (!ShowDialog(Owner(fr), in, det, p)) {
+  Edits edits;
+  if (!ShowDialog(Owner(fr), in, det, p, edits)) {
     *result = userCanceledErr;
     SetRects(fr, VRect{});
     return;
   }
   SaveParams(p);
 
-  const auto picked = Pick(Detect(det, p, double(det.w) / in.w), p, std::min(in.w, in.h) / 1000.0);
-  Apply(in, fr->outData, fr->outRowBytes, picked, p);
+  const auto lights = Arrange(Detect(det, p, double(det.w) / in.w), p, std::min(in.w, in.h) / 1000.0, edits);
+  Apply(in, fr->outData, fr->outRowBytes, lights, p);
   SetRects(fr, VRect{}); // 空の矩形 = もう要求しない
 }
 

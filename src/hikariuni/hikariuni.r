@@ -25,50 +25,14 @@ resource 'PiPL' (16000, "Hikariuni", purgeable)
 
 		PlugInMaxSize { 2000000, 2000000 },
 
+		// 7 つのケース（平面・選択範囲・フローティング・透明度の編集可／保護 × 選択範囲の有無）はすべて同じ扱い
+		#define HIKARIUNI_CASE inStraightData, outStraightData, doNotWriteOutsideSelection, \
+			filtersLayerMasks, worksWithBlankData, copySourceToDestination
 		FilterCaseInfo
 		{
 			{
-				/* Flat data, no selection */
-				inStraightData, outStraightData,
-				doNotWriteOutsideSelection,
-				filtersLayerMasks, worksWithBlankData,
-				copySourceToDestination,
-
-				/* Flat data with selection */
-				inStraightData, outStraightData,
-				doNotWriteOutsideSelection,
-				filtersLayerMasks, worksWithBlankData,
-				copySourceToDestination,
-
-				/* Floating selection */
-				inStraightData, outStraightData,
-				doNotWriteOutsideSelection,
-				filtersLayerMasks, worksWithBlankData,
-				copySourceToDestination,
-
-				/* Editable transparency, no selection */
-				inStraightData, outStraightData,
-				doNotWriteOutsideSelection,
-				filtersLayerMasks, worksWithBlankData,
-				copySourceToDestination,
-
-				/* Editable transparency, with selection */
-				inStraightData, outStraightData,
-				doNotWriteOutsideSelection,
-				filtersLayerMasks, worksWithBlankData,
-				copySourceToDestination,
-
-				/* Preserved transparency, no selection */
-				inStraightData, outStraightData,
-				doNotWriteOutsideSelection,
-				filtersLayerMasks, worksWithBlankData,
-				copySourceToDestination,
-
-				/* Preserved transparency, with selection */
-				inStraightData, outStraightData,
-				doNotWriteOutsideSelection,
-				filtersLayerMasks, worksWithBlankData,
-				copySourceToDestination
+				HIKARIUNI_CASE, HIKARIUNI_CASE, HIKARIUNI_CASE, HIKARIUNI_CASE,
+				HIKARIUNI_CASE, HIKARIUNI_CASE, HIKARIUNI_CASE
 			}
 		}
 	}

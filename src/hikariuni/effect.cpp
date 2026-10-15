@@ -44,7 +44,7 @@ bool Clip(const LightBuffer& b, double x0, double y0, double x1, double y1, int&
 }
 
 // 中心から外へ線形に消える円。中心の明るさは value
-void Halo(LightBuffer& b, double x, double y, double r, const float value[3]) {
+void Halo(LightBuffer& b, double x, double y, double r, const double value[3]) {
   int ix0, iy0, ix1, iy1;
   if (!Clip(b, x - r, y - r, x + r, y + r, ix0, iy0, ix1, iy1)) return;
   for (int py = iy0; py < iy1; py++)
@@ -56,40 +56,63 @@ void Halo(LightBuffer& b, double x, double y, double r, const float value[3]) {
     }
 }
 
-// 光芒 1 本の 1 チャンネル。中心で幅 width、先端で幅 0 の三角形。
-// 長さ方向の明るさは value → 0.4 * value（25% 地点）→ 0。縁は 1px ぶん面積で近似したアンチエイリアス
-void Ray(LightBuffer& b, int ch, double x, double y, double cs, double sn, double len, double width, double value) {
-  if (len < 1) return;
-  const double hw = width / 2, tx = x + cs * len, ty = y + sn * len, ox = -sn * hw, oy = cs * hw;
+// lo..hi を「a <= v * dx + c <= b を満たす dx」で絞る（v がほぼ 0 なら c だけで判定）。空なら false
+bool Narrow(double& lo, double& hi, double v, double c, double a, double b) {
+  if (std::abs(v) < 1e-9) return a <= c && c <= b;
+  const double p = (a - c) / v, q = (b - c) / v;
+  lo = std::max(lo, std::min(p, q));
+  hi = std::min(hi, std::max(p, q));
+  return lo <= hi;
+}
+
+// 光芒 1 本。方向 (cs, sn)、中心の幅 width で先端に向かって細くなり、RGB ごとに長さ len[ch]（虹色のにじみ）。
+// 長さ方向の明るさは value → 0.4 * value（25% 地点）→ 0。
+// 幅方向は soft = 0 で縁がくっきり（1px のアンチエイリアス）、1 で幅 2 倍の山形（明るさの合計はほぼ同じ）。
+// 外接矩形全体ではなく、各行で光芒が通る範囲だけを調べる
+void Ray(LightBuffer& b, double x, double y, double cs, double sn, const double len[3], double width, double soft,
+         const double value[3]) {
+  const double L = std::max({len[0], len[1], len[2]});
+  if (L < 1) return;
+  const double hw = width / 2, reach = hw * (1 + soft) + 1; // 中心線から光が届く最大の距離
   int ix0, iy0, ix1, iy1;
-  if (!Clip(b, std::min({x + ox, x - ox, tx}) - 1, std::min({y + oy, y - oy, ty}) - 1,
-            std::max({x + ox, x - ox, tx}) + 1, std::max({y + oy, y - oy, ty}) + 1, ix0, iy0, ix1, iy1))
+  if (!Clip(b, std::min(x, x + cs * L) - reach, std::min(y, y + sn * L) - reach, std::max(x, x + cs * L) + reach,
+            std::max(y, y + sn * L) + reach, ix0, iy0, ix1, iy1))
     return;
-  for (int py = iy0; py < iy1; py++)
-    for (int px = ix0; px < ix1; px++) {
-      const double dx = px + 0.5 - x, dy = py + 0.5 - y;
+  for (int py = iy0; py < iy1; py++) {
+    const double dy = py + 0.5 - y;
+    double lo = ix0 + 0.5 - x, hi = ix1 - 0.5 - x; // この行で調べる dx の範囲
+    if (!Narrow(lo, hi, -sn, dy * cs, -reach, reach) || !Narrow(lo, hi, cs, dy * sn, -0.5, L)) continue;
+    const int px0 = std::max(ix0, int(std::floor(x + lo - 0.5))), px1 = std::min(ix1, int(std::ceil(x + hi - 0.5)) + 1);
+    for (int px = px0; px < px1; px++) {
+      const double dx = px + 0.5 - x;
       const double t = dx * cs + dy * sn, s = std::abs(dy * cs - dx * sn);
-      if (t < -0.5 || t >= len) continue;
-      const double u = std::max(0.0, t) / len, hwt = hw * (1 - u);
-      double cover = std::clamp(hwt + 0.5 - s, 0.0, 1.0) * std::clamp(t + 0.5, 0.0, 1.0);
-      if (hwt < 0.5) cover *= 2 * hwt; // 1px より細い部分は幅に比例して暗くする
-      if (cover <= 0) continue;
-      const double g = u < 0.25 ? 1 - 2.4 * u : 0.4 * (1 - u) / 0.75;
-      At(b, px, py, ch) += float(value * g * cover);
+      if (t < -0.5) continue;
+      for (int ch = 0; ch < 3; ch++) {
+        if (len[ch] < 1 || t >= len[ch]) continue;
+        const double u = std::max(0.0, t) / len[ch], hwt = hw * (1 - u);
+        const double hard = std::clamp(hwt + 0.5 - s, 0.0, 1.0);
+        const double tent = std::clamp(1 - s / (hwt * (1 + soft) + 0.5), 0.0, 1.0);
+        double cover      = (hard + (tent - hard) * soft) * std::clamp(t + 0.5, 0.0, 1.0);
+        if (hwt < 0.5) cover *= 2 * hwt; // 1px より細い部分は幅に比例して暗くする
+        if (cover <= 0) continue;
+        const double g = u < 0.25 ? 1 - 2.4 * u : 0.4 * (1 - u) / 0.75;
+        At(b, px, py, ch) += float(value[ch] * g * cover);
+      }
     }
+  }
 }
 
 template<typename T>
-void ApplyT(const PixelView& in, void* out, int64_t outRowBytes, const std::vector<Light>& picked, const Params& p,
+void ApplyT(const PixelView& in, void* out, int64_t outRowBytes, const std::vector<Light>& lights, const Params& p,
             float maxValue) {
   const float scale  = maxValue / 255;
   const double unit  = std::min(in.w, in.h) / 1000.0;
-  const bool alpha   = in.planes > in.colors; // 色の次のプレーンが透明度
-  constexpr int kRow = 256;                   // メモリを抑えるため 256 行ずつ描く
+  const bool alpha   = in.alphaWritable && in.planes > in.colors; // 色の次のプレーンが透明度
+  constexpr int kRow = 256;                                       // メモリを抑えるため 256 行ずつ描く
   for (int y0 = 0; y0 < in.h; y0 += kRow) {
     LightBuffer buf{0, y0, in.w, std::min(kRow, in.h - y0)};
     buf.rgb.assign(size_t(buf.w) * buf.h * 3, 0.f);
-    Render(picked, p, 1.0, unit, buf);
+    Render(lights, p, 1.0, unit, buf);
     for (int y = 0; y < buf.h; y++) {
       auto srcRow       = reinterpret_cast<const T*>(static_cast<const char*>(in.data) + (y0 + y) * in.rowBytes);
       auto dstRow       = reinterpret_cast<T*>(static_cast<char*>(out) + (y0 + y) * outRowBytes);
@@ -125,6 +148,11 @@ void ApplyT(const PixelView& in, void* out, int64_t outRowBytes, const std::vect
 
 RgbImage Resample(const PixelView& src, int dw, int dh) {
   return src.depth == 8 ? ResampleT<uint8_t>(src, dw, dh, 1.0) : ResampleT<uint16_t>(src, dw, dh, 255.0 / 32768);
+}
+
+RgbImage Resample(const RgbImage& src, int dw, int dh) {
+  return ResampleT<float>({src.px.data(), int64_t(src.w) * 3 * int64_t(sizeof(float)), 3, 3, 0, src.w, src.h}, dw, dh,
+                          1.0);
 }
 
 std::vector<Light> Detect(const RgbImage& img, const Params& p, double scale) {
@@ -201,6 +229,10 @@ std::vector<Light> Detect(const RgbImage& img, const Params& p, double scale) {
     out.push_back({(mx + 0.5) / scale, (my + 0.5) / scale, e, float(r / m), float(g / m), float(b / m)});
   }
   std::stable_sort(out.begin(), out.end(), [](const Light& a, const Light& c) { return a.e > c.e; });
+  // 最も強い光源を 1 にそろえる。どれを除外しても、ほかの光源の大きさが変わらないように
+  const double eMax = out.empty() ? 1 : out.front().e;
+  for (Light& l : out)
+    l.e /= eMax;
   return out;
 }
 
@@ -215,32 +247,59 @@ std::vector<Light> Pick(const std::vector<Light>& lights, const Params& p, doubl
   return out;
 }
 
-void Render(const std::vector<Light>& picked, const Params& p, double k, double unit, LightBuffer& buf) {
-  if (picked.empty()) return;
-  const double eMax = picked.front().e;
+std::vector<Light> Arrange(const std::vector<Light>& detected, const Params& p, double unit, const Edits& edits) {
+  std::vector<Light> out = Pick(detected, p, unit);
+  const double radius    = 5 * unit;
+  auto removed           = [&](const Light& l) {
+    return std::any_of(edits.removed.begin(), edits.removed.end(),
+                       [&](const Point& q) { return std::hypot(l.x - q.x, l.y - q.y) < radius; });
+  };
+  out.erase(std::remove_if(out.begin(), out.end(), removed), out.end());
+  out.insert(out.end(), edits.added.begin(), edits.added.end());
+  return out;
+}
+
+Light MakeLight(const RgbImage& img, double scale, double x, double y) {
+  // 検出用画像で (x, y) の周り 2px のうち、最も明るい画素の色を使う
+  const int cx = int(x * scale), cy = int(y * scale);
+  const float* best = nullptr;
+  float bestLum     = -1;
+  for (int py = std::max(0, cy - 2); py <= std::min(img.h - 1, cy + 2); py++)
+    for (int px = std::max(0, cx - 2); px <= std::min(img.w - 1, cx + 2); px++) {
+      const float* c  = &img.px[(size_t(py) * img.w + px) * 3];
+      const float lum = 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2];
+      if (lum > bestLum) bestLum = lum, best = c;
+    }
+  Light light{x, y, 1, 1, 1, 1};
+  const float m = best ? std::max({best[0], best[1], best[2]}) : 0.f;
+  if (m >= 64) light.r = best[0] / m, light.g = best[1] / m, light.b = best[2] / m; // 暗い場所なら白のまま
+  return light;
+}
+
+void Render(const std::vector<Light>& lights, const Params& p, double k, double unit, LightBuffer& buf) {
   const int rays    = std::max(1, int(p.rays));
   const double f[3] = {1 + p.disp * 0.2, 1, 1 - p.disp * 0.2}; // R を長く B を短くすると先端が虹色ににじむ
-  for (const Light& s : picked) {
-    const double wt = std::sqrt(s.e / eMax), x = s.x * k, y = s.y * k;
+  for (const Light& s : lights) {
+    const double wt = std::sqrt(std::clamp(s.e, 0.0, 1.0)), x = s.x * k, y = s.y * k;
     const double a    = std::min(1.0, p.power * (0.3 + 0.7 * wt));
     const double c[3] = {s.r * 255.0 * a, s.g * 255.0 * a, s.b * 255.0 * a};
     const double R    = p.glow * unit * wt;
     if (R >= 1) {
-      const float halo[3] = {float(c[0] * 0.6), float(c[1] * 0.6), float(c[2] * 0.6)};
+      const double halo[3] = {c[0] * 0.6, c[1] * 0.6, c[2] * 0.6};
       Halo(buf, x, y, R, halo);
     }
-    const double width = p.width * unit * (0.3 + 0.7 * wt);
+    const double width  = p.width * unit * (0.3 + 0.7 * wt);
+    const double len[3] = {p.len * unit * wt * f[0], p.len * unit * wt * f[1], p.len * unit * wt * f[2]};
     for (int i = 0; i < rays; i++) {
       const double ang = (p.angle + i * 360.0 / rays) * kPi / 180;
-      for (int ch = 0; ch < 3; ch++)
-        Ray(buf, ch, x, y, std::cos(ang), std::sin(ang), p.len * unit * wt * f[ch], width, c[ch]);
+      Ray(buf, x, y, std::cos(ang), std::sin(ang), len, width, p.soft, c);
     }
   }
 }
 
-void Apply(const PixelView& in, void* out, int64_t outRowBytes, const std::vector<Light>& picked, const Params& p) {
-  if (in.depth == 8) ApplyT<uint8_t>(in, out, outRowBytes, picked, p, 255.f);
-  else ApplyT<uint16_t>(in, out, outRowBytes, picked, p, 32768.f);
+void Apply(const PixelView& in, void* out, int64_t outRowBytes, const std::vector<Light>& lights, const Params& p) {
+  if (in.depth == 8) ApplyT<uint8_t>(in, out, outRowBytes, lights, p, 255.f);
+  else ApplyT<uint16_t>(in, out, outRowBytes, lights, p, 32768.f);
 }
 
 } // namespace hikariuni

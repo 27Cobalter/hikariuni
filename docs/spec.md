@@ -48,6 +48,7 @@ docs/spec.md              この仕様
   - SDK ヘッダーが Windows 用の分岐を選ぶよう `WIN32=1` を定義する。
 - C ランタイムは静的リンク（`/MT`、Debug は `/MTd`）。配布先に VC++ ランタイムを要求しない。
 - ダイアログは comctl32 v6（今の見た目のコントロール）を使う。DLL のマニフェストに依存関係を入れ、`ISOLATION_AWARE_ENABLED=1` で有効にする。
+- 言語は C++23（`LanguageStandard` = `stdcpp23`、VS 2026 では `/std:c++23preview`）。プラグインもテストも同じ。
 - ソースは UTF-8（`/utf-8`）、警告レベル `/W4`。SDK ヘッダーは外部ヘッダー扱いで警告を出さない。
 - 出力は `src/x64/<構成>/hikariuni.8bf`。
 - テスト: GoogleTest。VS の Google Test プロジェクトテンプレートと同じ NuGet パッケージ `Microsoft.googletest.v140.windesktop.msvcstl.static.rt-static` 1.8.1.8（静的ライブラリ・静的ランタイム、`gtest_main` 付き）を `packages.config` で使う。vcpkg は使わない。

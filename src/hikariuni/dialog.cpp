@@ -1,10 +1,12 @@
 #include "dialog.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <commctrl.h>
 #include <cwchar>
-#include <iterator>
+#include <format>
+#include <optional>
 #include <string>
 #include <utility>
 #include <windowsx.h>
@@ -22,7 +24,7 @@ extern "C" IMAGE_DOS_HEADER __ImageBase; // この DLL の HINSTANCE
 namespace hikariuni {
 namespace {
 
-constexpr int kParamCount = int(std::size(kParams));
+constexpr int kParamCount = int(kParams.size());
 constexpr int kLabelId = 2000, kEditId = 2100, kSliderId = 2200;
 constexpr UINT_PTR kRefreshTimer = 1;
 constexpr int kPickRadius        = 12; // 右クリックで除外するとき、光源をつかめる画面上の距離（px）
@@ -44,27 +46,25 @@ const std::wstring& IniPath() {
   return path;
 }
 
-// 数値として読めて有限なら true（nan や inf は受け付けない）
-bool ParseNumber(const wchar_t* text, double& v) {
+// 数値として読めて有限なら値を返す（nan や inf は受け付けない）
+std::optional<double> ParseNumber(const wchar_t* text) {
   wchar_t* end;
   const double d = wcstod(text, &end);
-  if (end == text || !std::isfinite(d)) return false;
-  v = d;
-  return true;
+  if (end == text || !std::isfinite(d)) return std::nullopt;
+  return d;
 }
 
-bool ReadIni(const wchar_t* section, const wchar_t* key, double& v) {
-  wchar_t text[32];
-  return !IniPath().empty() &&
-         GetPrivateProfileStringW(section, key, L"", text, DWORD(std::size(text)), IniPath().c_str()) &&
-         ParseNumber(text, v);
+std::optional<double> ReadIni(const wchar_t* section, const wchar_t* key) {
+  std::array<wchar_t, 32> text{};
+  if (IniPath().empty() ||
+      !GetPrivateProfileStringW(section, key, L"", text.data(), DWORD(text.size()), IniPath().c_str()))
+    return std::nullopt;
+  return ParseNumber(text.data());
 }
 
 void WriteIni(const wchar_t* section, const wchar_t* key, double v) {
   if (IniPath().empty()) return;
-  wchar_t text[32];
-  swprintf(text, std::size(text), L"%g", v);
-  WritePrivateProfileStringW(section, key, text, IniPath().c_str());
+  WritePrivateProfileStringW(section, key, std::format(L"{}", v).c_str(), IniPath().c_str());
 }
 
 // ---- パラメーター ----
@@ -170,12 +170,11 @@ RECT ShownRect(HWND dlg, const State& s) {
   return {x, y, x + s.bw, y + s.bh};
 }
 
-// ダイアログのクライアント座標を元画像座標にする。プレビュー画像の外なら false
-bool ToImage(HWND dlg, const State& s, POINT pt, Point& out) {
+// ダイアログのクライアント座標を元画像座標にする。プレビュー画像の外なら nullopt
+std::optional<Point> ToImage(HWND dlg, const State& s, POINT pt) {
   const RECT r = ShownRect(dlg, s);
-  if (!PtInRect(&r, pt)) return false;
-  out = {s.shown.ox + (pt.x - r.left + 0.5) / s.shown.k, s.shown.oy + (pt.y - r.top + 0.5) / s.shown.k};
-  return true;
+  if (!PtInRect(&r, pt)) return std::nullopt;
+  return Point{s.shown.ox + (pt.x - r.left + 0.5) / s.shown.k, s.shown.oy + (pt.y - r.top + 0.5) / s.shown.k};
 }
 
 void DrawPreview(const DRAWITEMSTRUCT& di, const State& s) {
@@ -196,24 +195,20 @@ void DrawPreview(const DRAWITEMSTRUCT& di, const State& s) {
 
 // 左クリック: その位置に光源を足す
 void AddLight(HWND dlg, State& s, POINT pt) {
-  Point q;
-  if (!ToImage(dlg, s, pt, q)) return;
-  s.edits.added.push_back(MakeLight(*s.detectImage, double(s.detectImage->w) / s.image->w, q.x, q.y));
+  const auto q = ToImage(dlg, s, pt);
+  if (!q) return;
+  s.edits.added.push_back(MakeLight(*s.detectImage, double(s.detectImage->w) / s.image->w, q->x, q->y));
   RequestRefresh(dlg, s, false);
 }
 
 // 右クリック: 近くの光源を外す（手動で足したものは消し、自動のものは除外する）
 void RemoveLight(HWND dlg, State& s, POINT pt) {
-  Point q;
-  if (!ToImage(dlg, s, pt, q)) return;
-  const double radius = kPickRadius / s.shown.k;
-  auto nearest        = [&](const std::vector<Light>& v) {
-    return std::min_element(v.begin(), v.end(), [&](const Light& a, const Light& b) {
-      return std::hypot(a.x - q.x, a.y - q.y) < std::hypot(b.x - q.x, b.y - q.y);
-    });
-  };
-  auto within = [&](const Light& l) { return std::hypot(l.x - q.x, l.y - q.y) < radius; };
-  auto& added = s.edits.added;
+  const auto q = ToImage(dlg, s, pt);
+  if (!q) return;
+  const auto dist    = [&](const Light& l) { return std::hypot(l.x - q->x, l.y - q->y); };
+  const auto nearest = [&](const std::vector<Light>& v) { return std::ranges::min_element(v, {}, dist); };
+  const auto within  = [&](const Light& l) { return dist(l) < kPickRadius / s.shown.k; };
+  auto& added        = s.edits.added;
   if (auto it = nearest(added); it != added.end() && within(*it)) added.erase(it);
   else if (auto jt = nearest(s.arranged); jt != s.arranged.end() && within(*jt))
     s.edits.removed.push_back({jt->x, jt->y});
@@ -224,9 +219,8 @@ void RemoveLight(HWND dlg, State& s, POINT pt) {
 // ---- コントロール ----
 
 void SetValueText(HWND dlg, int i, double v) {
-  wchar_t text[32];
-  swprintf(text, std::size(text), kParams[i].step < 1 ? L"%.2f" : L"%.0f", v);
-  SetDlgItemTextW(dlg, kEditId + i, text);
+  const std::wstring text = kParams[i].step < 1 ? std::format(L"{:.2f}", v) : std::format(L"{:.0f}", v);
+  SetDlgItemTextW(dlg, kEditId + i, text.c_str());
 }
 
 // パラメーター i を v にして、数値・スライダー・プレビューをそろえる。
@@ -243,11 +237,9 @@ void SetValue(HWND dlg, State& s, int i, double v, bool fromSlider = false) {
 
 // 数値入力欄の値を確定する。数値でなければ元の値に戻す
 void CommitEdit(HWND dlg, State& s, int i) {
-  wchar_t text[32];
-  GetDlgItemTextW(dlg, kEditId + i, text, int(std::size(text)));
-  double v = s.p.*kParams[i].field;
-  ParseNumber(text, v);
-  SetValue(dlg, s, i, v);
+  std::array<wchar_t, 32> text{};
+  GetDlgItemTextW(dlg, kEditId + i, text.data(), int(text.size()));
+  SetValue(dlg, s, i, ParseNumber(text.data()).value_or(s.p.*kParams[i].field));
 }
 
 void SetAll(HWND dlg, const Params& p) {
@@ -314,13 +306,13 @@ void Layout(HWND dlg) {
 
 // 前回のウィンドウサイズに戻し、画面の中央に置く。最小サイズが画面より大きければ最小サイズのまま
 void RestoreSize(HWND dlg, const State& s) {
-  double w, h;
-  if (!ReadIni(L"window", L"width", w) || !ReadIni(L"window", L"height", h)) return;
+  const auto w = ReadIni(L"window", L"width"), h = ReadIni(L"window", L"height");
+  if (!w || !h) return;
   MONITORINFO mi{sizeof(mi)};
   GetMonitorInfoW(MonitorFromWindow(dlg, MONITOR_DEFAULTTONEAREST), &mi);
   const RECT& a = mi.rcWork;
   auto fit      = [](double v, LONG lo, LONG hi) { return int(std::clamp(v, double(lo), double(std::max(lo, hi)))); };
-  const int cw = fit(w, s.minSize.cx, a.right - a.left), ch = fit(h, s.minSize.cy, a.bottom - a.top);
+  const int cw = fit(*w, s.minSize.cx, a.right - a.left), ch = fit(*h, s.minSize.cy, a.bottom - a.top);
   SetWindowPos(dlg, nullptr, a.left + (a.right - a.left - cw) / 2, a.top + (a.bottom - a.top - ch) / 2, cw, ch,
                SWP_NOZORDER);
 }
@@ -398,8 +390,7 @@ INT_PTR CALLBACK DialogProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     return TRUE;
   }
   case WM_LBUTTONDOWN: {
-    Point q;
-    if (!s || !ToImage(dlg, *s, MousePos(lp), q)) break;
+    if (!s || !ToImage(dlg, *s, MousePos(lp))) break;
     s->dragging = true, s->moved = false, s->dragFrom = MousePos(lp);
     SetCapture(dlg);
     return TRUE;
@@ -474,12 +465,9 @@ INT_PTR CALLBACK DialogProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
 
 Params LoadParams() {
   Params p;
-  for (const ParamInfo& info : kParams) {
-    double v;
-    if (ReadIni(L"params", info.key, v)) p.*info.field = Snap(info, v);
-  }
-  double raysOnly;
-  if (ReadIni(L"params", L"raysOnly", raysOnly)) p.raysOnly = raysOnly != 0;
+  for (const ParamInfo& info : kParams)
+    if (const auto v = ReadIni(L"params", info.key)) p.*info.field = Snap(info, *v);
+  if (const auto raysOnly = ReadIni(L"params", L"raysOnly")) p.raysOnly = *raysOnly != 0;
   return p;
 }
 
@@ -492,7 +480,7 @@ void SaveParams(const Params& p) {
 bool ShowDialog(HWND owner, const PixelView& image, const RgbImage& detectImage, Params& p, Edits& edits) {
   const INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_BAR_CLASSES};
   InitCommonControlsEx(&icc);
-  State s{&image, &detectImage, p, edits};
+  State s{.image = &image, .detectImage = &detectImage, .p = p, .edits = edits};
   if (DialogBoxParamW(Instance(), MAKEINTRESOURCEW(IDD_MAIN), owner, DialogProc, reinterpret_cast<LPARAM>(&s)) != IDOK)
     return false;
   p     = s.p;

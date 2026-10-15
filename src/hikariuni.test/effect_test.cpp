@@ -57,26 +57,28 @@ TEST(Detect, KeepsOnlyPointLights) {
   ASSERT_EQ(lights.size(), 1u);
   EXPECT_DOUBLE_EQ(lights[0].x, 30.5);
   EXPECT_DOUBLE_EQ(lights[0].y, 30.5);
-  EXPECT_DOUBLE_EQ(lights[0].e, 1); // 最も強い光源の強さは 1
 }
 
-// 除外した位置の近くの光源を外し、手動の光源を足す。外しても、ほかの光源の強さは変わらない
+// 除外した位置の近くの光源を外し、手動の光源を足す。強さは検出した最も強い光源を 1 にそろえ、
+// 外しても、ほかの光源の強さは変わらない。手動の光源は kMinManual 以上
 TEST(Arrange, AppliesEdits) {
   const std::vector<Light> detected = {
-      {0,   0, 1,   1, 1, 1},
-      {100, 0, 0.5, 1, 1, 1}
+      {0,   0, 4, 1, 1, 1},
+      {100, 0, 2, 1, 1, 1}
   };
   Params p;
   p.gap = 0;
   const Edits edits{
-      .added   = {{50, 50, 1, 1, 0, 0}},
+      .added   = {{50, 50, 1, 1, 0, 0}, {70, 70, 0, 1, 1, 1}},
       .removed = {{2, 0}}, // 光源 (0, 0) から 2px（5 単位以内）
   };
   const auto lights = Arrange(detected, p, 1.0, edits);
-  ASSERT_EQ(lights.size(), 2u);
+  ASSERT_EQ(lights.size(), 3u);
   EXPECT_DOUBLE_EQ(lights[0].x, 100);
   EXPECT_DOUBLE_EQ(lights[0].e, 0.5);
   EXPECT_DOUBLE_EQ(lights[1].x, 50);
+  EXPECT_DOUBLE_EQ(lights[1].e, 0.25);
+  EXPECT_DOUBLE_EQ(lights[2].e, kMinManual);
 }
 
 // 手動の光源の色は付近の最も明るい画素から取り、暗い場所なら白
@@ -84,13 +86,33 @@ TEST(MakeLight, TakesColorFromBrightestNearbyPixel) {
   RgbImage img{10, 10, std::vector<float>(10 * 10 * 3, 10.f)};
   const auto px = img.view();
   px[5, 6, 0] = 200, px[5, 6, 1] = 100, px[5, 6, 2] = 50;
-  const Light colored = MakeLight(img, 1.0, 5, 5);
+  const Light colored = MakeLight(img, Params{}, 1.0, 5, 5);
   EXPECT_FLOAT_EQ(colored.r, 1);
   EXPECT_FLOAT_EQ(colored.g, 0.5f);
-  EXPECT_DOUBLE_EQ(colored.e, 1);
-  const Light dark = MakeLight(img, 1.0, 1, 1);
+  const Light dark = MakeLight(img, Params{}, 1.0, 1, 1);
   EXPECT_FLOAT_EQ(dark.g, 1);
   EXPECT_FLOAT_EQ(dark.b, 1);
+}
+
+// 手動の光源の強さは検出と同じ測り方（検出された光源の上なら同じ値）。コントラストのない場所なら 0
+TEST(MakeLight, MeasuresEnergyLikeDetect) {
+  RgbImage img{40, 40, std::vector<float>(40 * 40 * 3, 80.f)};
+  const auto px = img.view();
+  for (int y = 10; y < 12; y++)
+    for (int x = 10; x < 12; x++)
+      for (int c = 0; c < 3; c++)
+        px[y, x, c] = 255;
+  px[30, 30, 0] = px[30, 30, 1] = px[30, 30, 2] = 230; // 検出の閾値より暗い点
+
+  Params p;
+  p.thr = 200, p.contrast = 160, p.size = 100;
+  const auto lights = Detect(img, p, 1.0);
+  ASSERT_EQ(lights.size(), 1u);
+  EXPECT_DOUBLE_EQ(MakeLight(img, p, 1.0, 11, 11).e, lights[0].e);
+  const double faint = MakeLight(img, p, 1.0, 30, 30).e; // 暗い点は弱い光源になる
+  EXPECT_GT(faint, 0);
+  EXPECT_LT(faint, lights[0].e);
+  EXPECT_DOUBLE_EQ(MakeLight(img, p, 1.0, 20, 20).e, 0);
 }
 
 // 強い順に、最小間隔より近いものは捨て、最大個数で打ち切る

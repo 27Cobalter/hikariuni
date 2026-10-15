@@ -333,7 +333,7 @@ std::optional<Point> ToImage(HWND dlg, const State& s, POINT pt) {
 void AddLight(HWND dlg, State& s, POINT pt) {
   const auto q = ToImage(dlg, s, pt);
   if (!q) return;
-  s.edits.added.push_back(MakeLight(*s.detectImage, double(s.detectImage->w) / s.image->w, q->x, q->y));
+  s.edits.added.push_back(MakeLight(*s.detectImage, s.p, double(s.detectImage->w) / s.image->w, q->x, q->y));
   RequestRefresh(dlg, s, false);
 }
 

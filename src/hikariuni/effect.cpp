@@ -215,63 +215,88 @@ RgbImage Resample(const RgbImage& src, int dw, int dh) {
   return ResampleT<float>(view, dw, dh, 0, dh, 1.0);
 }
 
-std::vector<Light> Detect(const RgbImage& img, const Params& p, double scale) {
+namespace {
+
+// 輝度と局所コントラスト（輝度 - 周囲（半径 R の箱）の平均。明るさ未満の画素は 0）。maxD は最大サイズ（px）
+struct ContrastMap {
+  std::vector<float> lum, con;
+  double maxD;
+  int R;
+};
+
+ContrastMap Contrast(const RgbImage& img, const Params& p) {
   const int w = img.w, h = img.h, W = w + 1;
   const size_t n = size_t(w) * h;
   const auto px  = img.view();
-  std::vector<float> lum(n), con(n);
+  ContrastMap m{std::vector<float>(n), std::vector<float>(n), p.size * std::min(w, h) / 1000, 0};
   std::vector<double> integral(size_t(W) * (h + 1));
   for (int y = 0; y < h; y++) {
     double row = 0;
     for (int x = 0; x < w; x++) {
       const size_t i = size_t(y) * w + x;
-      lum[i]         = 0.2126f * px[y, x, 0] + 0.7152f * px[y, x, 1] + 0.0722f * px[y, x, 2];
-      row += lum[i];
+      m.lum[i]       = 0.2126f * px[y, x, 0] + 0.7152f * px[y, x, 1] + 0.0722f * px[y, x, 2];
+      row += m.lum[i];
       integral[size_t(y + 1) * W + x + 1] = integral[size_t(y) * W + x + 1] + row;
     }
   }
-
-  // 局所コントラスト = 輝度 - 周囲（半径 R の箱）の平均。背景を測る範囲は光源より十分広く取る
-  const double maxD = p.size * std::min(w, h) / 1000;
-  const int R       = std::max(3, int(std::lround(maxD * 1.5)));
+  m.R = std::max(3, int(std::lround(m.maxD * 1.5))); // 背景を測る範囲は光源より十分広く取る
   for (int y = 0; y < h; y++) {
-    const int y0 = std::max(0, y - R), y1 = std::min(h, y + R + 1);
+    const int y0 = std::max(0, y - m.R), y1 = std::min(h, y + m.R + 1);
     for (int x = 0; x < w; x++) {
-      const int x0 = std::max(0, x - R), x1 = std::min(w, x + R + 1);
+      const int x0 = std::max(0, x - m.R), x1 = std::min(w, x + m.R + 1);
       const size_t i    = size_t(y) * w + x;
       const double mean = (integral[size_t(y1) * W + x1] - integral[size_t(y0) * W + x1] -
                            integral[size_t(y1) * W + x0] + integral[size_t(y0) * W + x0]) /
                           (double(x1 - x0) * (y1 - y0));
-      con[i]            = lum[i] >= p.thr ? float(lum[i] - mean) : 0.f;
+      m.con[i]          = m.lum[i] >= p.thr ? float(m.lum[i] - mean) : 0.f;
     }
   }
+  return m;
+}
+
+// seed から、con が threshold 以上の画素を 4 近傍でたどり、各画素の添字で fn を呼ぶ。たどった画素は seen に印を付ける
+template<typename F>
+void Flood(const std::vector<float>& con, int w, int h, int seed, double threshold, std::vector<uint8_t>& seen,
+           F&& fn) {
+  std::vector<int> stack{seed};
+  seen[seed] = 1;
+  while (!stack.empty()) {
+    const int q = stack.back();
+    stack.pop_back();
+    fn(q);
+    const int x = q % w, y = q / w;
+    auto visit = [&](int v) {
+      if (!seen[v] && con[v] >= threshold) seen[v] = 1, stack.push_back(v);
+    };
+    if (x > 0) visit(q - 1);
+    if (x < w - 1) visit(q + 1);
+    if (y > 0) visit(q - w);
+    if (y < h - 1) visit(q + w);
+  }
+}
+
+} // namespace
+
+std::vector<Light> Detect(const RgbImage& img, const Params& p, double scale) {
+  const int w = img.w, h = img.h;
+  const size_t n                 = size_t(w) * h;
+  const auto px                  = img.view();
+  const auto [lum, con, maxD, R] = Contrast(img, p);
 
   // コントラストの高い画素を 4 近傍でつないで光源候補にし、それっぽくないものを捨てる
   std::vector<uint8_t> seen(n);
-  std::vector<int> stack;
   std::vector<Light> out;
   for (size_t start = 0; start < n; start++) {
     if (seen[start] || con[start] < p.contrast) continue;
     double cnt = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, e = 0, sl = 0;
     Rgb color{};
-    seen[start] = 1;
-    stack.push_back(int(start));
-    while (!stack.empty()) {
-      const int q = stack.back();
-      stack.pop_back();
+    Flood(con, w, h, int(start), p.contrast, seen, [&](int q) {
       const int x = q % w, y = q / w;
       cnt++, sx += x, sy += y, sxx += double(x) * x, syy += double(y) * y, sxy += double(x) * y;
       for (int c = 0; c < 3; c++)
         color[c] += px[y, x, c];
       e += con[q], sl += lum[q];
-      auto visit = [&](int v) {
-        if (!seen[v] && con[v] >= p.contrast) seen[v] = 1, stack.push_back(v);
-      };
-      if (x > 0) visit(q - 1);
-      if (x < w - 1) visit(q + 1);
-      if (y > 0) visit(q - w);
-      if (y < h - 1) visit(q + w);
-    }
+    });
     const double mx = sx / cnt, my = sy / cnt;
     const double vx = sxx / cnt - mx * mx + 1.0 / 12, vy = syy / cnt - my * my + 1.0 / 12, cv = sxy / cnt - mx * my;
     const double t = (vx + vy) / 2, d = std::hypot((vx - vy) / 2, cv);                   // 共分散の固有値 t ± d
@@ -293,10 +318,6 @@ std::vector<Light> Detect(const RgbImage& img, const Params& p, double scale) {
         {(mx + 0.5) / scale, (my + 0.5) / scale, e, float(color[0] / m), float(color[1] / m), float(color[2] / m)});
   }
   std::ranges::stable_sort(out, std::greater{}, &Light::e);
-  // 最も強い光源を 1 にそろえる。どれを除外しても、ほかの光源の大きさが変わらないように
-  const double eMax = out.empty() ? 1 : out.front().e;
-  for (Light& l : out)
-    l.e /= eMax;
   return out;
 }
 
@@ -317,24 +338,36 @@ std::vector<Light> Arrange(const std::vector<Light>& detected, const Params& p, 
     return std::ranges::any_of(edits.removed,
                                [&](const Point& q) { return std::hypot(l.x - q.x, l.y - q.y) < 5 * unit; });
   });
+  const size_t picked = out.size();
   out.append_range(edits.added);
+  // 強さは検出した全候補のうち最も強いものを 1 にそろえる。どれを除外しても、ほかの光源の大きさが変わらないように。
+  // 手動の光源は、コントラストのない場所に置いても見えるよう kMinManual 以上にする
+  const double eMax = detected.empty() ? 1 : std::ranges::max(detected, {}, &Light::e).e;
+  for (size_t i = 0; i < out.size(); i++)
+    out[i].e = i < picked ? out[i].e / eMax : std::max(kMinManual, out[i].e / eMax);
   return out;
 }
 
-Light MakeLight(const RgbImage& img, double scale, double x, double y) {
-  // 検出用画像で (x, y) の周り 2px のうち、最も明るい画素の色を使う
-  const auto px = img.view();
-  const int cx = int(x * scale), cy = int(y * scale);
-  Rgb best{};
-  double bestLum = -1;
+Light MakeLight(const RgbImage& img, const Params& p, double scale, double x, double y) {
+  // 検出用画像で (x, y) の周り 2px のうち最も明るい画素を起点にする
+  // ponytail: クリックのたびに画像全体のコントラストを計算する（2000px で十数 ms）。重ければ周りだけにする
+  const auto map = Contrast(img, p);
+  const int cx = std::clamp(int(x * scale), 0, img.w - 1), cy = std::clamp(int(y * scale), 0, img.h - 1);
+  int seed = cy * img.w + cx;
   for (int py = std::max(0, cy - 2); py <= std::min(img.h - 1, cy + 2); py++)
-    for (int qx = std::max(0, cx - 2); qx <= std::min(img.w - 1, cx + 2); qx++) {
-      const Rgb c{px[py, qx, 0], px[py, qx, 1], px[py, qx, 2]};
-      if (const double lum = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; lum > bestLum) bestLum = lum, best = c;
-    }
-  Light light{x, y, 1, 1, 1, 1};
-  if (const double m = std::ranges::max(best); m >= 64) // 暗い場所なら白のまま
-    light.r = float(best[0] / m), light.g = float(best[1] / m), light.b = float(best[2] / m);
+    for (int qx = std::max(0, cx - 2); qx <= std::min(img.w - 1, cx + 2); qx++)
+      if (const int i = py * img.w + qx; map.lum[i] > map.lum[seed]) seed = i;
+  Light light{x, y, 0, 1, 1, 1};
+  // 強さは検出と同じく、起点からコントラストの高い画素をたどった合計。検出の閾値に届かない光は起点のコントラストまで下げてたどる
+  if (const float c0 = map.con[seed]; c0 > 0) {
+    std::vector<uint8_t> seen(map.con.size());
+    Flood(map.con, img.w, img.h, seed, std::min(p.contrast, double(c0)), seen, [&](int q) { light.e += map.con[q]; });
+  }
+  const auto px = img.view();
+  const int sx = seed % img.w, sy = seed / img.w;
+  const Rgb c{px[sy, sx, 0], px[sy, sx, 1], px[sy, sx, 2]};
+  if (const double m = std::ranges::max(c); m >= 64) // 暗い場所なら白のまま
+    light.r = float(c[0] / m), light.g = float(c[1] / m), light.b = float(c[2] / m);
   return light;
 }
 

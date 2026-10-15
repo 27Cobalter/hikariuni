@@ -51,7 +51,8 @@ inline constexpr auto kParams = std::to_array<ParamInfo>({
     {L"glow",     L"ハロー",                     0,   200, 1,    &Params::glow,     false},
 });
 
-// 光源。座標は元画像の px。e は最も強い光源を 1 とした強さ。色は最大チャンネルが 1 になるよう正規化
+// 光源。座標は元画像の px。e は強さ（Detect / MakeLight ではエネルギー = コントラストの合計、
+// Arrange 後は検出した最も強い光源を 1 とした値）。色は最大チャンネルが 1 になるよう正規化
 struct Light {
   double x, y, e;
   float r, g, b;
@@ -118,12 +119,17 @@ void ComposePreview(std::span<const uint32_t> base, int w, int h, double k, doub
 // 強い順に、最小間隔を空けて最大個数まで選ぶ。unit は元画像の短辺 / 1000
 [[nodiscard]] std::vector<Light> Pick(const std::vector<Light>& lights, const Params& p, double unit);
 
-// 描く光源を決める。Pick したうえで、除外した位置の近く（5 単位以内）の光源を外し、手動の光源を足す
+// 手動の光源の最低の強さ（Arrange 後の値）
+inline constexpr double kMinManual = 0.05;
+
+// 描く光源を決める。Pick したうえで、除外した位置の近く（5 単位以内）の光源を外し、手動の光源を足す。
+// 強さは detected のうち最も強いものを 1 にそろえる（手動の光源は kMinManual 以上）
 [[nodiscard]] std::vector<Light> Arrange(const std::vector<Light>& detected, const Params& p, double unit,
                                          const Edits& edits);
 
-// (x, y)（元画像座標）に手動で置く光源。色は検出用画像のその付近で最も明るい画素から取る（暗ければ白）
-[[nodiscard]] Light MakeLight(const RgbImage& img, double scale, double x, double y);
+// (x, y)（元画像座標）に手動で置く光源。検出用画像のその付近で最も明るい画素から、Detect と同じ測り方で
+// エネルギーを求める。色はその画素から取る（暗ければ白）
+[[nodiscard]] Light MakeLight(const RgbImage& img, const Params& p, double scale, double x, double y);
 
 // lights のハローと光芒を buf に加算する。k は元画像 px → 描画先 px、unit は描画先での短辺 / 1000
 void Render(const std::vector<Light>& lights, const Params& p, double k, double unit, LightBuffer& buf);

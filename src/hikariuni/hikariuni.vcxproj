@@ -38,6 +38,8 @@
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp23</LanguageStandard>
+      <!-- AVX2 対応 CPU（2013 年以降の Intel Haswell / AMD Excavator 以降）を前提に自動ベクトル化させる -->
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <!-- SDK ヘッダーは WIN32=1 で Windows 用の分岐を選ぶ（PIActions.h の MSWindows）。
            ISOLATION_AWARE_ENABLED はダイアログで DLL のマニフェスト（comctl32 v6）を使うため -->

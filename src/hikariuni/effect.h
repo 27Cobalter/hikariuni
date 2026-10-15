@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <mdspan>
+#include <span>
 #include <vector>
 
 namespace hikariuni {
@@ -100,6 +101,16 @@ struct LightBuffer {
 // src を dw * dh に面積平均で縮小する
 [[nodiscard]] RgbImage Resample(const PixelView& src, int dw, int dh);
 [[nodiscard]] RgbImage Resample(const RgbImage& src, int dw, int dh);
+// Resample(src, dw, dh) の行 [y0, y1) だけを作る（結果の h は y1 - y0）
+[[nodiscard]] RgbImage ResampleRows(const PixelView& src, int dw, int dh, int y0, int y1);
+
+// プレビュー用: 元画像を w * h に縮小した 8bit の画素（0x00RRGGBB）
+[[nodiscard]] std::vector<uint32_t> PreviewBase(const PixelView& image, int w, int h);
+
+// プレビュー用: base（PreviewBase で倍率 k に縮小したもの、w * h）に光芒を加算して out に書く。
+// p.raysOnly なら黒に加算する。unit は元画像の短辺 / 1000
+void ComposePreview(std::span<const uint32_t> base, int w, int h, double k, double unit,
+                    const std::vector<Light>& lights, const Params& p, std::span<uint32_t> out);
 
 // img（元画像を縮小したもの。scale = img.w / 元画像の幅）から光源を探し、強い順に返す
 [[nodiscard]] std::vector<Light> Detect(const RgbImage& img, const Params& p, double scale);

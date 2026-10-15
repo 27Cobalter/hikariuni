@@ -39,8 +39,9 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
-      <!-- SDK ヘッダーは WIN32=1 で Windows 用の分岐を選ぶ（PIActions.h の MSWindows） -->
-      <PreprocessorDefinitions>WIN32=1;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- SDK ヘッダーは WIN32=1 で Windows 用の分岐を選ぶ（PIActions.h の MSWindows）。
+           ISOLATION_AWARE_ENABLED はダイアログで DLL のマニフェスト（comctl32 v6）を使うため -->
+      <PreprocessorDefinitions>WIN32=1;_WINDOWS;_USRDLL;NOMINMAX;ISOLATION_AWARE_ENABLED=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <!-- ランタイム DLL 不要にする -->
       <RuntimeLibrary Condition="'$(Configuration)'=='Debug'">MultiThreadedDebug</RuntimeLibrary>
       <RuntimeLibrary Condition="'$(Configuration)'=='Release'">MultiThreaded</RuntimeLibrary>
@@ -54,7 +55,14 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="dialog.cpp" />
+    <ClCompile Include="effect.cpp" />
     <ClCompile Include="hikariuni.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="dialog.h" />
+    <ClInclude Include="effect.h" />
+    <ClInclude Include="resource.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="hikariuni.rc" />

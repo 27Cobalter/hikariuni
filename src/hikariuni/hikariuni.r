@@ -7,7 +7,7 @@ resource 'PiPL' (16000, "Hikariuni", purgeable)
 {
 	{
 		Kind { Filter },
-		Name { "Hikariuni" },
+		Name { "Hikariuni..." },
 		Category { "Hikariuni" },
 		Version { (latestFilterVersion << 16) | latestFilterSubVersion },
 		CodeWin64X86 { "PluginMain" },
@@ -36,13 +36,13 @@ resource 'PiPL' (16000, "Hikariuni", purgeable)
 
 				/* Flat data with selection */
 				inStraightData, outStraightData,
-				writeOutsideSelection,
+				doNotWriteOutsideSelection,
 				filtersLayerMasks, worksWithBlankData,
 				copySourceToDestination,
 
 				/* Floating selection */
 				inStraightData, outStraightData,
-				writeOutsideSelection,
+				doNotWriteOutsideSelection,
 				filtersLayerMasks, worksWithBlankData,
 				copySourceToDestination,
 
@@ -54,7 +54,7 @@ resource 'PiPL' (16000, "Hikariuni", purgeable)
 
 				/* Editable transparency, with selection */
 				inStraightData, outStraightData,
-				writeOutsideSelection,
+				doNotWriteOutsideSelection,
 				filtersLayerMasks, worksWithBlankData,
 				copySourceToDestination,
 
@@ -66,7 +66,7 @@ resource 'PiPL' (16000, "Hikariuni", purgeable)
 
 				/* Preserved transparency, with selection */
 				inStraightData, outStraightData,
-				writeOutsideSelection,
+				doNotWriteOutsideSelection,
 				filtersLayerMasks, worksWithBlankData,
 				copySourceToDestination
 			}

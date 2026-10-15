@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>18.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{64FDB1D0-E298-46AD-BC6C-881C0C6EB113}</ProjectGuid>
+    <RootNamespace>hikariuni</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
+    <WholeProgramOptimization Condition="'$(Configuration)'=='Release'">true</WholeProgramOptimization>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <TargetExt>.8bf</TargetExt>
+    <!-- Photoshop Plug-in SDK の pluginsdk フォルダ（環境変数）。外部ヘッダー扱いにして警告を出さない -->
+    <ExternalIncludePath>$(PHOTOSHOP_SDK_PATH)\photoshopapi\photoshop;$(PHOTOSHOP_SDK_PATH)\photoshopapi\pica_sp;$(PHOTOSHOP_SDK_PATH)\samplecode\common\includes;$(ExternalIncludePath)</ExternalIncludePath>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp23</LanguageStandard>
+      <!-- AVX2 対応 CPU（2013 年以降の Intel Haswell / AMD Excavator 以降）を前提に自動ベクトル化させる -->
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <!-- SDK ヘッダーは WIN32=1 で Windows 用の分岐を選ぶ（PIActions.h の MSWindows）。
+           ISOLATION_AWARE_ENABLED はダイアログで DLL のマニフェスト（comctl32 v6）を使うため -->
+      <PreprocessorDefinitions>WIN32=1;_WINDOWS;_USRDLL;NOMINMAX;ISOLATION_AWARE_ENABLED=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- ランタイム DLL 不要にする -->
+      <RuntimeLibrary Condition="'$(Configuration)'=='Debug'">MultiThreadedDebug</RuntimeLibrary>
+      <RuntimeLibrary Condition="'$(Configuration)'=='Release'">MultiThreaded</RuntimeLibrary>
+    </ClCompile>
+    <ResourceCompile>
+      <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="dialog.cpp" />
+    <ClCompile Include="effect.cpp" />
+    <ClCompile Include="hikariuni.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="dialog.h" />
+    <ClInclude Include="effect.h" />
+    <ClInclude Include="resource.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="hikariuni.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Affinity などの互換ホストは JSON 形式の PiPL を読めないので、.r から従来形式の PiPL を作る -->
+    <CustomBuild Include="hikariuni.r">
+      <FileType>Document</FileType>
+      <Message>PiPL を生成: %(Filename).pipl</Message>
+      <Command>cl /nologo /utf-8 /EP /P /DMSWindows=1 /DWIN32=1 /I"$(PHOTOSHOP_SDK_PATH)\photoshopapi\photoshop" /I"$(PHOTOSHOP_SDK_PATH)\samplecode\common\includes" /Fi"$(IntDir)%(Filename).rr" /Tc "%(FullPath)" &amp;&amp; "$(PHOTOSHOP_SDK_PATH)\samplecode\resources\Cnvtpipl.exe" "$(IntDir)%(Filename).rr" "$(IntDir)%(Filename).pipl"</Command>
+      <Outputs>$(IntDir)%(Filename).pipl</Outputs>
+    </CustomBuild>
+  </ItemGroup>
+  <Target Name="CheckPhotoshopSdk" BeforeTargets="PrepareForBuild">
+    <Error Condition="!Exists('$(PHOTOSHOP_SDK_PATH)\photoshopapi\photoshop\PIFilter.h')" Text="環境変数 PHOTOSHOP_SDK_PATH に Photoshop Plug-in SDK の pluginsdk フォルダを指定してください（現在: '$(PHOTOSHOP_SDK_PATH)'）" />
+  </Target>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

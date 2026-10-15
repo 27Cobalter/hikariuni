@@ -1,0 +1,12 @@
+#pragma once
+
+#define IDD_MAIN 101
+#define IDC_PREVIEW 1001
+#define IDC_RESET 1002
+#define IDC_RAYS_ONLY 1003
+#define IDC_FIT 1004
+#define IDC_HINT 1005
+#define IDC_ZOOM_TEXT 1006
+#define IDC_HSCROLL 1007
+#define IDC_VSCROLL 1008
+#define IDC_THEME 1009

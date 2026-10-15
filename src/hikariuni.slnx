@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+  </Configurations>
+  <Project Path="hikariuni/hikariuni.vcxproj" Id="64fdb1d0-e298-46ad-bc6c-881c0c6eb113" />
+  <Project Path="hikariuni.test/hikariuni.test.vcxproj" Id="59412d94-67dd-4438-949b-c81b89efe2e5" />
+</Solution>

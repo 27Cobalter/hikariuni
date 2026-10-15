@@ -1,10 +1,16 @@
-// Hikariuni: 光源に光芒を描く Photoshop 互換フィルター（.8bf）。
-// 現段階は Affinity に読み込まれるかの確認用で、色を反転するだけ。
+// Hikariuni: 光源を見つけて光芒を描く Photoshop 互換フィルター（.8bf）。ホストとのやり取りだけをここに書く
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <windows.h>
 
 #include <PIDefines.h>
 #include <PIFilter.h>
+
+#include "dialog.h"
+#include "effect.h"
+
+using namespace hikariuni;
 
 static bool Use32(FilterRecord* fr) {
   return fr->bigDocumentData && fr->bigDocumentData->PluginUsing32BitCoordinates;
@@ -24,16 +30,9 @@ static void SetRects(FilterRecord* fr, const VRect& v) {
   fr->inRect = fr->outRect = Rect{int16(v.top), int16(v.left), int16(v.bottom), int16(v.right)};
 }
 
-// 全プレーンをインターリーブで受け取り、色プレーンだけ反転（透明度はそのまま）
-template<typename T>
-static void Invert(FilterRecord* fr, int32 w, int32 h, int colors, T max) {
-  const int planes = fr->planes;
-  for (int32 y = 0; y < h; y++) {
-    auto in  = reinterpret_cast<const T*>(static_cast<const char*>(fr->inData) + intptr_t(y) * fr->inRowBytes);
-    auto out = reinterpret_cast<T*>(static_cast<char*>(fr->outData) + intptr_t(y) * fr->outRowBytes);
-    for (int32 i = 0; i < w * planes; i++)
-      out[i] = i % planes < colors ? T(max - in[i]) : in[i];
-  }
+static HWND Owner(FilterRecord* fr) {
+  auto pd = static_cast<PlatformData*>(fr->platformData);
+  return pd ? reinterpret_cast<HWND>(pd->hwnd) : nullptr;
 }
 
 static void DoStart(FilterRecord* fr, int16* result) {
@@ -50,17 +49,29 @@ static void DoStart(FilterRecord* fr, int16* result) {
   fr->inHiPlane = fr->outHiPlane = int16(fr->planes - 1);
   if ((*result = fr->advanceState()) != noErr) return;
 
-  const int32 w = r.right - r.left, h = r.bottom - r.top;
-  if (fr->depth == 8) Invert<uint8_t>(fr, w, h, gray ? 1 : 3, 255);
-  else Invert<uint16_t>(fr, w, h, gray ? 1 : 3, 32768); // Photoshop の 16bit は 0〜32768
+  const PixelView in{fr->inData, fr->inRowBytes,   fr->planes,      gray ? 1 : 3,
+                     fr->depth,  r.right - r.left, r.bottom - r.top};
+  // 光源の検出は長辺 2000px に縮小して行う
+  const double ds    = std::min(1.0, 2000.0 / std::max(in.w, in.h));
+  const RgbImage det = Resample(in, std::max(1, int(std::lround(in.w * ds))), std::max(1, int(std::lround(in.h * ds))));
 
+  Params p = LoadParams();
+  if (!ShowDialog(Owner(fr), in, det, p)) {
+    *result = userCanceledErr;
+    SetRects(fr, VRect{});
+    return;
+  }
+  SaveParams(p);
+
+  const auto picked = Pick(Detect(det, p, double(det.w) / in.w), p, std::min(in.w, in.h) / 1000.0);
+  Apply(in, fr->outData, fr->outRowBytes, picked, p);
   SetRects(fr, VRect{}); // 空の矩形 = もう要求しない
 }
 
 DLLExport MACPASCAL void PluginMain(const int16 selector, FilterRecordPtr fr, intptr_t* /*data*/, int16* result) {
   *result = noErr;
   if (selector == filterSelectorAbout) { // About のときだけ fr は AboutRecord なので触らない
-    MessageBoxW(nullptr, L"Hikariuni\n光源に光芒を描くフィルター", L"Hikariuni", MB_OK);
+    MessageBoxW(nullptr, L"Hikariuni\n光源を見つけて光芒を描くフィルター", L"Hikariuni", MB_OK);
     return;
   }
   if (fr->bigDocumentData) fr->bigDocumentData->PluginUsing32BitCoordinates = true;

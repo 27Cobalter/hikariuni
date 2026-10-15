@@ -14,9 +14,11 @@ Affinity 向けの Photoshop 互換フィルタープラグイン（`.8bf`）。
 - `PHOTOSHOP_SDK_PATH` に Photoshop Plug-in SDK の `pluginsdk` フォルダが必要。SDK はリポジトリに入れない。
 - コマンドラインでのビルド（VS 2026 の MSBuild）:
   ```
-  "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\amd64\MSBuild.exe" src\hikariuni.slnx -p:Configuration=Release -p:Platform=x64
+  "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\amd64\MSBuild.exe" src\hikariuni.slnx -restore -p:RestorePackagesConfig=true -p:Configuration=Release -p:Platform=x64
   ```
   出力は `src\x64\Release\hikariuni.8bf`。
+- テストは GoogleTest（VS の Google Test テンプレートと同じ NuGet パッケージ、`packages.config`）。vcpkg は使わない。`hikariuni.test` はビルド後に自動実行され、失敗するとビルドが失敗する。
+- 光源の検出・描画（`effect.*`）は Windows と SDK に依存させない。変更したら `hikariuni.test/effect_test.cpp` にテストを足す。
 
 ## コードスタイル
 

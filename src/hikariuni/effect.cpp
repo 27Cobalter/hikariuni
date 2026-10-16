@@ -6,6 +6,7 @@
 #include <functional>
 #include <numbers>
 #include <optional>
+#include <ranges>
 
 namespace hikariuni {
 namespace {
@@ -86,36 +87,108 @@ bool Narrow(double& lo, double& hi, double v, double c, double a, double b) {
   return lo <= hi;
 }
 
+// 光源の形を、光芒と直角の軸 s（光源の中心からの描画先 px）に投影した明るさ（1px ごと、最大 1）の累積。
+// c1[i] は s0 + i までの明るさの合計、c2 はそれをもう一度積分したもの
+struct Profile {
+  double s0 = 0, width = 0; // width は明るさの合計（実効的な幅、px）
+  std::vector<double> c1, c2;
+
+  double C1(double s) const {
+    const double u = s - s0;
+    const int n    = int(c1.size()) - 1;
+    if (u <= 0) return 0;
+    if (u >= n) return c1[n];
+    const int i = int(u);
+    return c1[i] + (c1[i + 1] - c1[i]) * (u - i);
+  }
+  double C2(double s) const {
+    const double u = s - s0;
+    const int n    = int(c1.size()) - 1;
+    if (u <= 0) return 0;
+    if (u >= n) return c2[n] + c1[n] * (u - n);
+    const int i    = int(u);
+    const double f = u - i;
+    return c2[i] + c1[i] * f + (c1[i + 1] - c1[i]) * f * f / 2;
+  }
+};
+
+// sh を、(cx, cy)（描画先 px）を中心に方向 (cs, sn) の光芒と直角の軸 s = dy * cs - dx * sn に投影する。
+// k は元画像 px → 描画先 px。マスはそれぞれ投影した幅（1px 以上）に一様に広げる。形がなければ nullopt
+std::optional<Profile> Project(const Shape& sh, double cx, double cy, double k, double cs, double sn) {
+  if (sh.weight.empty()) return std::nullopt;
+  const double fw = std::max(1.0, sh.cell * k * (std::abs(cs) + std::abs(sn))); // 1 マスを投影した幅
+  auto at         = [&](int i, int j) {
+    return ((sh.y0 + (j + 0.5) * sh.cell) * k - cy) * cs - ((sh.x0 + (i + 0.5) * sh.cell) * k - cx) * sn;
+  };
+  const auto [lo, hi] = std::minmax({at(0, 0), at(sh.w - 1, 0), at(0, sh.h - 1), at(sh.w - 1, sh.h - 1)});
+  Profile pr{.s0 = lo - fw / 2}; // ビンの端を形の端にそろえる（縦横の光芒ではマスとビンの境界が一致する）
+  std::vector<double> bins(size_t(std::ceil(hi + fw / 2 - pr.s0 - 1e-9)));
+  for (int j = 0; j < sh.h; j++)
+    for (int i = 0; i < sh.w; i++) {
+      const double wgt = sh.weight[size_t(j) * sh.w + i] / fw;
+      const double a = at(i, j) - fw / 2 - pr.s0, b = std::min(a + fw, double(bins.size()));
+      if (wgt > 0)
+        for (int q = int(a); q < b; q++)
+          bins[q] += wgt * (std::min(b, q + 1.0) - std::max(a, double(q)));
+    }
+  const double m = std::ranges::max(bins);
+  if (m <= 0) return std::nullopt;
+  pr.c1.assign(bins.size() + 1, 0);
+  pr.c2.assign(bins.size() + 1, 0);
+  for (size_t q = 0; q < bins.size(); q++) {
+    pr.c1[q + 1] = pr.c1[q] + bins[q] / m;
+    pr.c2[q + 1] = pr.c2[q] + (pr.c1[q] + pr.c1[q + 1]) / 2;
+  }
+  pr.width = pr.c1.back();
+  return pr;
+}
+
 // 光芒 1 本。方向 (cs, sn)、中心の幅 width で先端に向かって細くなり、RGB ごとに長さ len[ch]（虹色のにじみ）。
 // 長さ方向の明るさは value → 0.4 * value（25% 地点）→ 0。
 // 幅方向は soft = 0 で縁がくっきり（1px のアンチエイリアス）、1 で幅 2 倍の山形（明るさの合計はほぼ同じ）。
+// shape があれば、点光源の光芒の断面を光源の形の投影に畳み込んだ帯にする。
 // 外接矩形全体ではなく、各行で光芒が通る範囲だけを調べる
 void Ray(LightBuffer& b, double x, double y, double cs, double sn, const Rgb& len, double width, double soft,
-         const Rgb& value) {
+         const Rgb& value, const Profile* shape) {
   const double L = std::ranges::max(len);
   if (L < 1) return;
-  const double hw = width / 2, reach = hw * (1 + soft) + 1; // 中心線から光が届く最大の距離
-  const auto box = Clip(b, std::min(x, x + cs * L) - reach, std::min(y, y + sn * L) - reach,
-                        std::max(x, x + cs * L) + reach, std::max(y, y + sn * L) + reach);
+  const double hw = width / 2, reach = hw * (1 + soft) + 1; // 中心線（形があれば形の端）から光が届く最大の距離
+  const double sa = shape ? shape->s0 - reach : -reach;     // 光が届く s の範囲
+  const double sb = shape ? shape->s0 + double(shape->c1.size() - 1) + reach : reach;
+  const double r  = std::max(-sa, sb);
+  const auto box  = Clip(b, std::min(x, x + cs * L) - r, std::min(y, y + sn * L) - r, std::max(x, x + cs * L) + r,
+                         std::max(y, y + sn * L) + r);
   if (!box) return;
   const auto v = b.view();
   for (int py = box->y0; py < box->y1; py++) {
     const double dy = py + 0.5 - y;
     double lo = box->x0 + 0.5 - x, hi = box->x1 - 0.5 - x; // この行で調べる dx の範囲
-    if (!Narrow(lo, hi, -sn, dy * cs, -reach, reach) || !Narrow(lo, hi, cs, dy * sn, -0.5, L)) continue;
+    if (!Narrow(lo, hi, -sn, dy * cs, sa, sb) || !Narrow(lo, hi, cs, dy * sn, -0.5, L)) continue;
     const int px0 = std::max(box->x0, int(std::floor(x + lo - 0.5)));
     const int px1 = std::min(box->x1, int(std::ceil(x + hi - 0.5)) + 1);
     for (int px = px0; px < px1; px++) {
       const double dx = px + 0.5 - x;
-      const double t = dx * cs + dy * sn, s = std::abs(dy * cs - dx * sn);
+      const double t = dx * cs + dy * sn, s = dy * cs - dx * sn;
       if (t < -0.5) continue;
       for (int ch = 0; ch < 3; ch++) {
         if (len[ch] < 1 || t >= len[ch]) continue;
         const double u = std::max(0.0, t) / len[ch], hwt = hw * (1 - u);
-        const double hard = std::clamp(hwt + 0.5 - s, 0.0, 1.0);
-        const double tent = std::clamp(1 - s / (hwt * (1 + soft) + 0.5), 0.0, 1.0);
-        double cover      = (hard + (tent - hard) * soft) * std::clamp(t + 0.5, 0.0, 1.0);
-        if (hwt < 0.5) cover *= 2 * hwt; // 1px より細い部分は幅に比例して暗くする
+        double cover;
+        if (!shape) {
+          const double hard = std::clamp(hwt + 0.5 - std::abs(s), 0.0, 1.0);
+          const double tent = std::clamp(1 - std::abs(s) / (hwt * (1 + soft) + 0.5), 0.0, 1.0);
+          cover             = hard + (tent - hard) * soft;
+          if (hwt < 0.5) cover *= 2 * hwt; // 1px より細い部分は幅に比例して暗くする
+        } else {
+          // くっきり = 幅 2hwt の箱、山形 = 半径 rt の三角を、形の投影に畳み込む（累積から O(1) で求める）
+          const double rt   = hwt * (1 + soft);
+          const double hard = shape->C1(s + hwt) - shape->C1(s - hwt);
+          const double tent = rt > 1e-6 ? (shape->C2(s + rt) - 2 * shape->C2(s) + shape->C2(s - rt)) / rt : 0;
+          // 光源が光芒より細ければ点光源と同じ明るさ、太ければ帯の中が点光源の光芒の中心と同じ明るさになるよう割る
+          const double kernel = 2 * hwt + (rt - 2 * hwt) * soft; // 点光源の光芒の断面の明るさの合計
+          cover               = (hard + (tent - hard) * soft) / std::clamp(shape->width, 1.0, std::max(1.0, kernel));
+        }
+        cover *= std::clamp(t + 0.5, 0.0, 1.0);
         if (cover <= 0) continue;
         const double g = u < 0.25 ? 1 - 2.4 * u : 0.4 * (1 - u) / 0.75;
         v[py - b.y0, px - b.x0, ch] += float(value[ch] * g * cover);
@@ -275,6 +348,38 @@ void Flood(const std::vector<float>& con, int w, int h, int seed, double thresho
   }
 }
 
+// region（検出用画像 w 幅の添字）を光源の形にする。重みは輝度。囲まれた穴も光源に含める（大きな光源は
+// 局所コントラストが縁にしか出ず、輪になるため）。kShapeCells 四方に収まるよう数画素ずつまとめる
+Shape MakeShape(const std::vector<int>& region, const std::vector<float>& lum, int w, double scale) {
+  const auto [x0, x1] = std::ranges::minmax(region | std::views::transform([w](int q) { return q % w; }));
+  const auto [y0, y1] = std::ranges::minmax(region | std::views::transform([w](int q) { return q / w; }));
+  const int bw = x1 - x0 + 3, bh = y1 - y0 + 3; // 周りに 1px の余白を付け、外側からたどって穴を見つける
+  std::vector<uint8_t> mark(size_t(bw) * bh);   // 1 = 光源、2 = 外側
+  for (const int q : region)
+    mark[size_t(q / w - y0 + 1) * bw + (q % w - x0 + 1)] = 1;
+  std::vector<int> stack{0};
+  mark[0] = 2;
+  while (!stack.empty()) {
+    const int q = stack.back(), x = q % bw, y = q / bw;
+    stack.pop_back();
+    for (const int v : {x > 0 ? q - 1 : -1, x < bw - 1 ? q + 1 : -1, y > 0 ? q - bw : -1, y < bh - 1 ? q + bw : -1})
+      if (v >= 0 && !mark[v]) mark[v] = 2, stack.push_back(v);
+  }
+  const int f = std::max(1, int(std::ceil(std::max(bw - 2, bh - 2) / double(kShapeCells))));
+  Shape sh{.x0     = x0 / scale,
+           .y0     = y0 / scale,
+           .cell   = f / scale,
+           .w      = (bw - 2 + f - 1) / f,
+           .h      = (bh - 2 + f - 1) / f,
+           .weight = {}};
+  sh.weight.resize(size_t(sh.w) * sh.h);
+  for (int y = 0; y < bh - 2; y++)
+    for (int x = 0; x < bw - 2; x++)
+      if (mark[size_t(y + 1) * bw + x + 1] != 2)
+        sh.weight[size_t(y / f) * sh.w + x / f] += lum[size_t(y0 + y) * w + x0 + x];
+  return sh;
+}
+
 } // namespace
 
 std::vector<Light> Detect(const RgbImage& img, const Params& p, double scale) {
@@ -286,16 +391,19 @@ std::vector<Light> Detect(const RgbImage& img, const Params& p, double scale) {
   // コントラストの高い画素を 4 近傍でつないで光源候補にし、それっぽくないものを捨てる
   std::vector<uint8_t> seen(n);
   std::vector<Light> out;
+  std::vector<int> region;
   for (size_t start = 0; start < n; start++) {
     if (seen[start] || con[start] < p.contrast) continue;
     double cnt = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, e = 0, sl = 0;
     Rgb color{};
+    region.clear();
     Flood(con, w, h, int(start), p.contrast, seen, [&](int q) {
       const int x = q % w, y = q / w;
       cnt++, sx += x, sy += y, sxx += double(x) * x, syy += double(y) * y, sxy += double(x) * y;
       for (int c = 0; c < 3; c++)
         color[c] += px[y, x, c];
       e += con[q], sl += lum[q];
+      region.push_back(q);
     });
     const double mx = sx / cnt, my = sy / cnt;
     const double vx = sxx / cnt - mx * mx + 1.0 / 12, vy = syy / cnt - my * my + 1.0 / 12, cv = sxy / cnt - mx * my;
@@ -314,8 +422,8 @@ std::vector<Light> Detect(const RgbImage& img, const Params& p, double scale) {
     if (bright > area * 0.1) continue;
 
     const double m = std::ranges::max(color); // 色相を保ったまま最大チャンネルを 1 に
-    out.push_back(
-        {(mx + 0.5) / scale, (my + 0.5) / scale, e, float(color[0] / m), float(color[1] / m), float(color[2] / m)});
+    out.push_back({(mx + 0.5) / scale, (my + 0.5) / scale, e, float(color[0] / m), float(color[1] / m),
+                   float(color[2] / m), MakeShape(region, lum, w, scale)});
   }
   std::ranges::stable_sort(out, std::greater{}, &Light::e);
   return out;
@@ -361,7 +469,21 @@ Light MakeLight(const RgbImage& img, const Params& p, double scale, double x, do
   // 強さは検出と同じく、起点からコントラストの高い画素をたどった合計。検出の閾値に届かない光は起点のコントラストまで下げてたどる
   if (const float c0 = map.con[seed]; c0 > 0) {
     std::vector<uint8_t> seen(map.con.size());
-    Flood(map.con, img.w, img.h, seed, std::min(p.contrast, double(c0)), seen, [&](int q) { light.e += map.con[q]; });
+    std::vector<int> region;
+    Flood(map.con, img.w, img.h, seed, std::min(p.contrast, double(c0)), seen, [&](int q) {
+      light.e += map.con[q];
+      region.push_back(q);
+    });
+    // 光芒は形の重心から出す（クリックした位置が光源の端でも、光芒が形の両側に同じように出るように）
+    light.shape     = MakeShape(region, map.lum, img.w, scale);
+    const Shape& sh = light.shape;
+    double sw = 0, gx = 0, gy = 0;
+    for (int j = 0; j < sh.h; j++)
+      for (int i = 0; i < sh.w; i++) {
+        const double wgt = sh.weight[size_t(j) * sh.w + i];
+        sw += wgt, gx += wgt * (i + 0.5), gy += wgt * (j + 0.5);
+      }
+    if (sw > 0) light.x = sh.x0 + gx / sw * sh.cell, light.y = sh.y0 + gy / sw * sh.cell;
   }
   const auto px = img.view();
   const int sx = seed % img.w, sy = seed / img.w;
@@ -383,7 +505,9 @@ void Render(const std::vector<Light>& lights, const Params& p, double k, double 
     const double len   = p.len * unit * wt;
     for (int i = 0; i < rays; i++) {
       const double ang = (p.angle + i * 360.0 / rays) * std::numbers::pi / 180;
-      Ray(buf, x, y, std::cos(ang), std::sin(ang), {len * f[0], len * f[1], len * f[2]}, width, p.soft, c);
+      const double cs = std::cos(ang), sn = std::sin(ang);
+      const auto shape = Project(s.shape, x, y, k, cs, sn);
+      Ray(buf, x, y, cs, sn, {len * f[0], len * f[1], len * f[2]}, width, p.soft, c, shape ? &*shape : nullptr);
     }
   }
 }

@@ -23,15 +23,19 @@ PixelView Pixels(const std::vector<T>& v, int w, int h, int planes, int colors) 
           .h        = h};
 }
 
-// 101x101 のバッファの中央に光源 1 つを描く
-LightBuffer RenderCenter(const Params& p) {
+// 101x101 のバッファの中央に光源 1 つを描く（shape を渡せば形のある光源）
+LightBuffer RenderCenter(const Params& p, const Shape& shape = {}) {
   LightBuffer buf{.x0 = 0, .y0 = 0, .w = 101, .h = 101, .rgb = std::vector<float>(101 * 101 * 3)};
   Render(
       {
-          Light{50.5, 50.5, 1, 1, 1, 1}
+          Light{50.5, 50.5, 1, 1, 1, 1, shape}
   },
       p, 1.0, 1.0, buf);
   return buf;
+}
+
+double SumRed(const LightBuffer& b) {
+  return std::ranges::fold_left(b.rgb | std::views::stride(3), 0.0, std::plus{});
 }
 
 } // namespace
@@ -57,6 +61,46 @@ TEST(Detect, KeepsOnlyPointLights) {
   ASSERT_EQ(lights.size(), 1u);
   EXPECT_DOUBLE_EQ(lights[0].x, 30.5);
   EXPECT_DOUBLE_EQ(lights[0].y, 30.5);
+}
+
+// 検出した光源は形（元画像座標、重みは輝度）を持つ
+TEST(Detect, KeepsShape) {
+  RgbImage img{40, 40, std::vector<float>(40 * 40 * 3, 80.f)};
+  const auto px = img.view();
+  for (int y = 10; y < 13; y++)
+    for (int x = 20; x < 23; x++)
+      for (int c = 0; c < 3; c++)
+        px[y, x, c] = 255;
+  Params p;
+  p.thr = 200, p.contrast = 50, p.size = 100;
+  const auto lights = Detect(img, p, 0.5); // 検出用画像は元画像の半分
+  ASSERT_EQ(lights.size(), 1u);
+  const Shape& sh = lights[0].shape;
+  EXPECT_EQ(sh.w, 3);
+  EXPECT_EQ(sh.h, 3);
+  EXPECT_DOUBLE_EQ(sh.x0, 40);
+  EXPECT_DOUBLE_EQ(sh.y0, 20);
+  EXPECT_DOUBLE_EQ(sh.cell, 2);
+  EXPECT_FLOAT_EQ(std::ranges::fold_left(sh.weight, 0.f, std::plus{}), 9 * 255.f);
+}
+
+// 大きな光源の縁をクリックすると、局所コントラストは縁にしか出ないが、形は中まで埋める。
+// kShapeCells 四方に収まるようまとめ、位置は形の重心にする
+TEST(MakeLight, FillsAndCompactsLargeShape) {
+  RgbImage img{200, 200, std::vector<float>(200 * 200 * 3, 10.f)};
+  const auto px = img.view();
+  for (int y = 25; y < 175; y++)
+    for (int x = 25; x < 175; x++)
+      for (int c = 0; c < 3; c++)
+        px[y, x, c] = 255;
+  const Light light = MakeLight(img, Params{}, 1.0, 25, 100);
+  const Shape& sh   = light.shape;
+  EXPECT_EQ(sh.w, 50); // 150px を 3px ずつ
+  EXPECT_EQ(sh.h, 50);
+  EXPECT_DOUBLE_EQ(sh.cell, 3);
+  EXPECT_FLOAT_EQ(std::ranges::fold_left(sh.weight, 0.f, std::plus{}), 150 * 150 * 255.f);
+  EXPECT_DOUBLE_EQ(light.x, 100);
+  EXPECT_DOUBLE_EQ(light.y, 100);
 }
 
 // 除外した位置の近くの光源を外し、手動の光源を足す。強さは検出した最も強い光源を 1 にそろえ、
@@ -151,14 +195,39 @@ TEST(Render, SoftRaysSpreadWithSimilarTotal) {
   const LightBuffer hard = RenderCenter(p);
   p.soft                 = 1;
   const LightBuffer soft = RenderCenter(p);
-  const auto sumRed      = [](const LightBuffer& b) {
-    return std::ranges::fold_left(b.rgb | std::views::stride(3), 0.0, std::plus{});
-  };
-  EXPECT_NEAR(sumRed(soft) / sumRed(hard), 1, 0.15);
+  EXPECT_NEAR(SumRed(soft) / SumRed(hard), 1, 0.15);
   const auto h = hard.view(), s = soft.view();
   EXPECT_GT((s[55, 65, 0]), 0); // くっきり（この位置では中心から 3.6px まで）では届かない位置まで広がる
   EXPECT_EQ((h[55, 65, 0]), 0);
   EXPECT_FLOAT_EQ((s[50, 65, 0]), (h[50, 65, 0])); // 中心線の明るさは同じ
+}
+
+// 縦に長い光源（1x21）: 横の光芒は光源の高さぶんの帯になり、帯の中は点光源の光芒の中心と同じ明るさ。
+// 縦の光芒は光源の太さ（1px）のままで、点光源と同じ幅
+TEST(Render, WideLightDrawsWideRays) {
+  Params p;
+  p.rays = 4, p.angle = 0, p.len = 40, p.width = 3, p.soft = 0, p.glow = 0, p.disp = 0;
+  const Shape bar{.x0 = 50, .y0 = 40, .cell = 1, .w = 1, .h = 21, .weight = std::vector<float>(21, 255.f)};
+  const LightBuffer point = RenderCenter(p), wide = RenderCenter(p, bar);
+  const auto pv = point.view(), wv = wide.view();
+  EXPECT_EQ((pv[58, 70, 0]), 0);
+  EXPECT_GT((wv[58, 70, 0]), 0);
+  EXPECT_GT((wv[42, 70, 0]), 0);
+  EXPECT_EQ((wv[63, 70, 0]), 0);                                         // 光源の外まではほとんど広がらない
+  EXPECT_NEAR((wv[50, 70, 0]), (pv[50, 70, 0]), (pv[50, 70, 0]) * 0.02); // 帯の中は点光源の中心と同じ明るさ
+  EXPECT_NEAR((wv[56, 70, 0]), (wv[50, 70, 0]), (wv[50, 70, 0]) * 0.02); // 帯の中に明暗はない
+  EXPECT_EQ((wv[80, 54, 0]), 0);                                         // 縦の光芒は細いまま
+  EXPECT_GT((wv[80, 50, 0]), 0);
+}
+
+// 1 マスだけの形は、点光源とほぼ同じに描く（形の側は山形が 1 マスの幅でぼけるぶん、中心が 5% ほど暗い）
+TEST(Render, SinglePixelShapeMatchesPoint) {
+  Params p;
+  p.rays = 4, p.angle = 0, p.len = 40, p.width = 6, p.soft = 0.5, p.glow = 0, p.disp = 0;
+  const Shape dot{.x0 = 50, .y0 = 50, .cell = 1, .w = 1, .h = 1, .weight = {255.f}};
+  const LightBuffer point = RenderCenter(p), shaped = RenderCenter(p, dot);
+  EXPECT_NEAR(SumRed(shaped) / SumRed(point), 1, 0.1); // 点光源の山形は縁の分だけ半径が 0.5px 広い
+  EXPECT_NEAR((shaped.view()[50, 70, 0]), (point.view()[50, 70, 0]), (point.view()[50, 70, 0]) * 0.06);
 }
 
 // 色は加算して上限で止め、透明度はそのまま

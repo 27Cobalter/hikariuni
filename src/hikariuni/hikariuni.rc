@@ -14,7 +14,7 @@ BEGIN
     CONTROL         "", IDC_PREVIEW, "Static", SS_OWNERDRAW, 0, 0, 0, 0
     SCROLLBAR       IDC_HSCROLL, 0, 0, 0, 0, SBS_HORZ
     SCROLLBAR       IDC_VSCROLL, 0, 0, 0, 0, SBS_VERT
-    LTEXT           "クリック: 光源を追加　Alt+クリック: 除外　Ctrl+ホイール: 拡大縮小　中ボタンのドラッグ: 移動", IDC_HINT, 0, 0, 0, 0
+    LTEXT           "クリック: 光源を追加　Alt+クリック / ドラッグ: 除外　Ctrl+ホイール: 拡大縮小　中ボタンのドラッグ: 移動", IDC_HINT, 0, 0, 0, 0
     PUSHBUTTON      "初期値に戻す", IDC_RESET, 0, 0, 0, 0
     AUTOCHECKBOX    "光芒のみ出力（透過）", IDC_RAYS_ONLY, 0, 0, 0, 0, WS_TABSTOP
     PUSHBUTTON      "全体表示", IDC_FIT, 0, 0, 0, 0

@@ -51,11 +51,24 @@ inline constexpr auto kParams = std::to_array<ParamInfo>({
     {L"glow",     L"ハロー",                     0,   200, 1,    &Params::glow,     false},
 });
 
+// 光源の形（元画像座標）。(x0, y0) を左上に cell 四方のマスを w * h 個並べ、マスごとに明るさの重みを持つ。
+// weight が空なら点光源
+struct Shape {
+  double x0 = 0, y0 = 0, cell = 0;
+  int w = 0, h = 0;
+  std::vector<float> weight; // w * h
+};
+
+// 形を持つときに 1 辺に並べるマスの数の上限（大きな光源は数画素ずつまとめる）
+inline constexpr int kShapeCells = 64;
+
 // 光源。座標は元画像の px。e は強さ（Detect / MakeLight ではエネルギー = コントラストの合計、
-// Arrange 後は検出した最も強い光源を 1 とした値）。色は最大チャンネルが 1 になるよう正規化
+// Arrange 後は検出した最も強い光源を 1 とした値）。色は最大チャンネルが 1 になるよう正規化。
+// shape があれば、光芒はその形を光芒と直角の向きに投影した幅を持つ
 struct Light {
   double x, y, e;
   float r, g, b;
+  Shape shape = {};
 };
 
 // 手動の編集（元画像座標）。added は追加した光源、removed は除外した位置
@@ -128,7 +141,7 @@ inline constexpr double kMinManual = 0.05;
                                          const Edits& edits);
 
 // (x, y)（元画像座標）に手動で置く光源。検出用画像のその付近で最も明るい画素から、Detect と同じ測り方で
-// エネルギーを求める。色はその画素から取る（暗ければ白）
+// エネルギーと形を求める。形が取れたら位置は形の重心にする。色はその画素から取る（暗ければ白）
 [[nodiscard]] Light MakeLight(const RgbImage& img, const Params& p, double scale, double x, double y);
 
 // lights のハローと光芒を buf に加算する。k は元画像 px → 描画先 px、unit は描画先での短辺 / 1000

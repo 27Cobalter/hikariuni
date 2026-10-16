@@ -9,6 +9,7 @@
 #include <format>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <utility>
 #include <uxtheme.h>
@@ -125,9 +126,11 @@ struct State {
   bool dark       = true;
   Palette palette = kDark;
   Brush background, editBackground, canvas;
-  enum class Drag { None, Click, Pan } drag = Drag::None;
-  bool moved                                = false;
+  // Click: 左ボタン（離したときに光源を追加）、Box: Alt+左ボタン（離したときに外す）、Pan: 中ボタン（移動）
+  enum class Drag { None, Click, Box, Pan } drag = Drag::None;
+  bool moved                                     = false;
   POINT dragFrom{};
+  RECT box{}; // Alt+ドラッグで囲んでいる四角（表示枠内の座標）。空なら描かない
 };
 
 // ---- 再計算 ----
@@ -301,6 +304,7 @@ void DrawPreview(const DRAWITEMSTRUCT& di, const State& s) {
   ExcludeClipRect(di.hDC, shown.left, shown.top, shown.right, shown.bottom);
   FillRect(di.hDC, &di.rcItem, s.canvas.get());
   RestoreDC(di.hDC, saved);
+  if (!IsRectEmpty(&s.box)) DrawFocusRect(di.hDC, &s.box); // 反転の点線なので、明るい画像でも暗い画像でも見える
 }
 
 // ---- マウス ----
@@ -350,6 +354,21 @@ void RemoveLight(HWND dlg, State& s, POINT pt) {
     s.edits.removed.push_back({jt->x, jt->y});
   else return;
   RequestRefresh(dlg, s, false);
+}
+
+// Alt+ドラッグ: 囲んだ四角（表示枠内の座標）の中の光源をまとめて外す（手動で足したものは消し、自動のものは除外する）
+void RemoveLightsIn(HWND dlg, State& s, const RECT& box) {
+  const double x0 = s.ox + box.left / s.z, x1 = s.ox + box.right / s.z;
+  const double y0 = s.oy + box.top / s.z, y1 = s.oy + box.bottom / s.z;
+  const auto inside = [&](const Light& l) { return x0 <= l.x && l.x < x1 && y0 <= l.y && l.y < y1; };
+  // 今描いている自動の光源（手動の光源を足さずに配置し直す。arranged は再計算待ちで古いことがある）
+  const auto autos =
+      Arrange(s.lights, s.p, std::min(s.image->w, s.image->h) / 1000.0, {.added = {}, .removed = s.edits.removed});
+  const size_t before = s.edits.added.size() + s.edits.removed.size();
+  for (const Light& l : autos | std::views::filter(inside))
+    s.edits.removed.push_back({l.x, l.y});
+  std::erase_if(s.edits.added, inside);
+  if (s.edits.added.size() + s.edits.removed.size() != before) RequestRefresh(dlg, s, false);
 }
 
 // ---- 配色 ----
@@ -643,7 +662,9 @@ INT_PTR CALLBACK DialogProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
   case WM_LBUTTONDOWN:
   case WM_MBUTTONDOWN: // 左: クリック（離したときに光源を追加・除外）、中: ドラッグで移動
     if (!s || !OverViewport(dlg, MousePos(lp))) break;
-    s->drag  = msg == WM_MBUTTONDOWN ? State::Drag::Pan : State::Drag::Click;
+    s->drag  = msg == WM_MBUTTONDOWN      ? State::Drag::Pan
+               : GetKeyState(VK_MENU) < 0 ? State::Drag::Box
+                                          : State::Drag::Click;
     s->moved = false, s->dragFrom = MousePos(lp);
     if (s->drag == State::Drag::Pan) SetCursor(LoadCursor(nullptr, IDC_SIZEALL));
     SetCapture(dlg);
@@ -657,19 +678,36 @@ INT_PTR CALLBACK DialogProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     } else if (std::abs(pt.x - s->dragFrom.x) + std::abs(pt.y - s->dragFrom.y) >= 4) {
       s->moved = true; // 動かしたらクリックとみなさない
     }
+    if (s->drag == State::Drag::Box && s->moved) {
+      const POINT a = InViewport(dlg, s->dragFrom), b = InViewport(dlg, pt);
+      const SIZE v = Viewport(dlg);
+      s->box       = {std::clamp(std::min(a.x, b.x), 0L, v.cx), std::clamp(std::min(a.y, b.y), 0L, v.cy),
+                      std::clamp(std::max(a.x, b.x), 0L, v.cx), std::clamp(std::max(a.y, b.y), 0L, v.cy)};
+      InvalidateRect(GetDlgItem(dlg, IDC_PREVIEW), nullptr, FALSE);
+    }
     return TRUE;
   }
   case WM_LBUTTONUP:
   case WM_MBUTTONUP: {
     if (!s || s->drag == State::Drag::None) break;
-    const bool click = s->drag == State::Drag::Click && msg == WM_LBUTTONUP && !s->moved;
-    s->drag          = State::Drag::None;
+    const auto drag = s->drag;
+    const RECT box  = std::exchange(s->box, RECT{});
+    s->drag         = State::Drag::None;
     ReleaseCapture();
-    if (click) (GetKeyState(VK_MENU) < 0 ? RemoveLight : AddLight)(dlg, *s, MousePos(lp));
+    if (msg != WM_LBUTTONUP) return TRUE;
+    if (drag == State::Drag::Click && !s->moved) AddLight(dlg, *s, MousePos(lp));
+    else if (drag == State::Drag::Box && !s->moved) RemoveLight(dlg, *s, MousePos(lp));
+    else if (drag == State::Drag::Box) {
+      RemoveLightsIn(dlg, *s, box);
+      InvalidateRect(GetDlgItem(dlg, IDC_PREVIEW), nullptr, FALSE); // 四角の枠を消す
+    }
     return TRUE;
   }
   case WM_CAPTURECHANGED:
-    if (s) s->drag = State::Drag::None;
+    if (s && s->drag != State::Drag::None) {
+      s->drag = State::Drag::None, s->box = {};
+      InvalidateRect(GetDlgItem(dlg, IDC_PREVIEW), nullptr, FALSE);
+    }
     break;
   case WM_COMMAND: {
     const int id = LOWORD(wp);

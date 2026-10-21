@@ -132,16 +132,19 @@ void ComposePreview(std::span<const uint32_t> base, int w, int h, double k, doub
 // 強い順に、最小間隔を空けて最大個数まで選ぶ。unit は元画像の短辺 / 1000
 [[nodiscard]] std::vector<Light> Pick(const std::vector<Light>& lights, const Params& p, double unit);
 
-// 手動の光源の最低の強さ（Arrange 後の値）
+// 手動の光源の強さの下限と上限（Arrange 後の値。上限では光芒の長さとハローが検出した最も強い光源の 2 倍）
 inline constexpr double kMinManual = 0.05;
+inline constexpr double kMaxManual = 4;
 
 // 描く光源を決める。Pick したうえで、除外した位置の近く（5 単位以内）の光源を外し、手動の光源を足す。
-// 強さは detected のうち最も強いものを 1 にそろえる（手動の光源は kMinManual 以上）
+// 強さは detected のうち最も強いもの（detected が空なら手動の光源のうち最も強いもの）を 1 にそろえる
+// （手動の光源は kMinManual〜kMaxManual）
 [[nodiscard]] std::vector<Light> Arrange(const std::vector<Light>& detected, const Params& p, double unit,
                                          const Edits& edits);
 
-// (x, y)（元画像座標）に手動で置く光源。検出用画像のその付近で最も明るい画素から、Detect と同じ測り方で
-// エネルギーと形を求める。形が取れたら位置は形の重心にする。色はその画素から取る（暗ければ白）
+// (x, y)（元画像座標）に手動で置く光源。検出用画像のその付近で最も明るい画素から、輝度で領域をたどって
+// エネルギー（すぐ外側との輝度の差の合計）と形を求める。形が取れたら位置は形の重心にする。
+// 色はその画素から取る（暗ければ白）
 [[nodiscard]] Light MakeLight(const RgbImage& img, const Params& p, double scale, double x, double y);
 
 // lights のハローと光芒を buf に加算する。k は元画像 px → 描画先 px、unit は描画先での短辺 / 1000

@@ -297,17 +297,22 @@ struct ContrastMap {
   int R;
 };
 
+std::vector<float> Luminance(const RgbImage& img) {
+  std::vector<float> lum(size_t(img.w) * img.h);
+  for (size_t i = 0; i < lum.size(); i++)
+    lum[i] = 0.2126f * img.px[3 * i] + 0.7152f * img.px[3 * i + 1] + 0.0722f * img.px[3 * i + 2];
+  return lum;
+}
+
 ContrastMap Contrast(const RgbImage& img, const Params& p) {
   const int w = img.w, h = img.h, W = w + 1;
   const size_t n = size_t(w) * h;
-  const auto px  = img.view();
-  ContrastMap m{std::vector<float>(n), std::vector<float>(n), p.size * std::min(w, h) / 1000, 0};
+  ContrastMap m{Luminance(img), std::vector<float>(n), p.size * std::min(w, h) / 1000, 0};
   std::vector<double> integral(size_t(W) * (h + 1));
   for (int y = 0; y < h; y++) {
     double row = 0;
     for (int x = 0; x < w; x++) {
       const size_t i = size_t(y) * w + x;
-      m.lum[i]       = 0.2126f * px[y, x, 0] + 0.7152f * px[y, x, 1] + 0.0722f * px[y, x, 2];
       row += m.lum[i];
       integral[size_t(y + 1) * W + x + 1] = integral[size_t(y) * W + x + 1] + row;
     }
@@ -449,33 +454,47 @@ std::vector<Light> Arrange(const std::vector<Light>& detected, const Params& p, 
   const size_t picked = out.size();
   out.append_range(edits.added);
   // 強さは検出した全候補のうち最も強いものを 1 にそろえる。どれを除外しても、ほかの光源の大きさが変わらないように。
-  // 手動の光源は、コントラストのない場所に置いても見えるよう kMinManual 以上にする
-  const double eMax = detected.empty() ? 1 : std::ranges::max(detected, {}, &Light::e).e;
+  // 手動の光源は、コントラストのない場所に置いても見えるよう kMinManual 以上、検出より大きな光源の大きさが
+  // 伝わるよう kMaxManual まで
+  // 検出が 0 個なら、手動の光源のうち最も強いものを 1 にそろえる
+  const auto& ref   = detected.empty() ? edits.added : detected;
+  const double eMax = std::ranges::fold_left(ref, 0.0, [](double m, const Light& l) { return std::max(m, l.e); });
+  const double div  = eMax > 0 ? eMax : 1;
   for (size_t i = 0; i < out.size(); i++)
-    out[i].e = i < picked ? out[i].e / eMax : std::max(kMinManual, out[i].e / eMax);
+    out[i].e = i < picked ? out[i].e / div : std::clamp(out[i].e / div, kMinManual, kMaxManual);
   return out;
 }
 
 Light MakeLight(const RgbImage& img, const Params& p, double scale, double x, double y) {
   // 検出用画像で (x, y) の周り 2px のうち最も明るい画素を起点にする
-  // ponytail: クリックのたびに画像全体のコントラストを計算する（2000px で十数 ms）。重ければ周りだけにする
-  const auto map = Contrast(img, p);
-  const int cx = std::clamp(int(x * scale), 0, img.w - 1), cy = std::clamp(int(y * scale), 0, img.h - 1);
-  int seed = cy * img.w + cx;
-  for (int py = std::max(0, cy - 2); py <= std::min(img.h - 1, cy + 2); py++)
-    for (int qx = std::max(0, cx - 2); qx <= std::min(img.w - 1, cx + 2); qx++)
-      if (const int i = py * img.w + qx; map.lum[i] > map.lum[seed]) seed = i;
+  // ponytail: クリックのたびに画像全体の輝度を計算する。重ければ周りだけにする
+  const int w = img.w, h = img.h;
+  const auto lum = Luminance(img);
+  const int cx = std::clamp(int(x * scale), 0, w - 1), cy = std::clamp(int(y * scale), 0, h - 1);
+  int seed = cy * w + cx;
+  for (int py = std::max(0, cy - 2); py <= std::min(h - 1, cy + 2); py++)
+    for (int qx = std::max(0, cx - 2); qx <= std::min(w - 1, cx + 2); qx++)
+      if (const int i = py * w + qx; lum[i] > lum[seed]) seed = i;
   Light light{x, y, 0, 1, 1, 1};
-  // 強さは検出と同じく、起点からコントラストの高い画素をたどった合計。検出の閾値に届かない光は起点のコントラストまで下げてたどる
-  if (const float c0 = map.con[seed]; c0 > 0) {
-    std::vector<uint8_t> seen(map.con.size());
-    std::vector<int> region;
-    Flood(map.con, img.w, img.h, seed, std::min(p.contrast, double(c0)), seen, [&](int q) {
-      light.e += map.con[q];
-      region.push_back(q);
-    });
+  // 局所コントラストは大きな光源の中では 0 になるので、領域は輝度でたどる（起点と明るさの中間以上）。
+  // 強さは領域の各画素の（輝度 - すぐ外側の平均輝度）の合計で、面積に比例する
+  std::vector<int> region;
+  if (const double peak = lum[seed]; peak >= p.thr) {
+    std::vector<uint8_t> seen(lum.size()); // 1 = 領域、2 = すぐ外側
+    Flood(lum, w, h, seed, (peak + p.thr) / 2, seen, [&](int q) { region.push_back(q); });
+    double bg = 0, nb = 0;
+    for (const int q : region) {
+      const int qx = q % w, qy = q / w;
+      for (const int v : {qx > 0 ? q - 1 : -1, qx < w - 1 ? q + 1 : -1, qy > 0 ? q - w : -1, qy < h - 1 ? q + w : -1})
+        if (v >= 0 && !seen[v]) seen[v] = 2, bg += lum[v], nb++;
+    }
+    if (nb == 0) region.clear(); // 画像全体が明るい = コントラストがない
+    for (const int q : region)
+      light.e += lum[q] - bg / nb;
+  }
+  if (!region.empty()) {
     // 光芒は形の重心から出す（クリックした位置が光源の端でも、光芒が形の両側に同じように出るように）
-    light.shape     = MakeShape(region, map.lum, img.w, scale);
+    light.shape     = MakeShape(region, lum, w, scale);
     const Shape& sh = light.shape;
     double sw = 0, gx = 0, gy = 0;
     for (int j = 0; j < sh.h; j++)
@@ -497,11 +516,12 @@ void Render(const std::vector<Light>& lights, const Params& p, double k, double 
   const int rays = std::max(1, int(p.rays));
   const Rgb f{1 + p.disp * 0.2, 1, 1 - p.disp * 0.2}; // R を長く B を短くすると先端が虹色ににじむ
   for (const Light& s : lights) {
-    const double wt = std::sqrt(std::clamp(s.e, 0.0, 1.0)), x = s.x * k, y = s.y * k;
-    const double a = std::min(1.0, p.power * (0.3 + 0.7 * wt));
+    // 1 を超える強さ（検出より大きな手動の光源）は、長さとハローだけを伸ばす
+    const double wt = std::sqrt(std::clamp(s.e, 0.0, kMaxManual)), w1 = std::min(1.0, wt), x = s.x * k, y = s.y * k;
+    const double a = std::min(1.0, p.power * (0.3 + 0.7 * w1));
     const Rgb c{s.r * 255.0 * a, s.g * 255.0 * a, s.b * 255.0 * a};
     if (const double R = p.glow * unit * wt; R >= 1) Halo(buf, x, y, R, {c[0] * 0.6, c[1] * 0.6, c[2] * 0.6});
-    const double width = p.width * unit * (0.3 + 0.7 * wt);
+    const double width = p.width * unit * (0.3 + 0.7 * w1);
     const double len   = p.len * unit * wt;
     for (int i = 0; i < rays; i++) {
       const double ang = (p.angle + i * 360.0 / rays) * std::numbers::pi / 180;

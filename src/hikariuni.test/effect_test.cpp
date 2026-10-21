@@ -84,7 +84,7 @@ TEST(Detect, KeepsShape) {
   EXPECT_FLOAT_EQ(std::ranges::fold_left(sh.weight, 0.f, std::plus{}), 9 * 255.f);
 }
 
-// 大きな光源の縁をクリックすると、局所コントラストは縁にしか出ないが、形は中まで埋める。
+// 大きな光源は、縁をクリックしても中心をクリックしても形が全体になる。
 // kShapeCells 四方に収まるようまとめ、位置は形の重心にする
 TEST(MakeLight, FillsAndCompactsLargeShape) {
   RgbImage img{200, 200, std::vector<float>(200 * 200 * 3, 10.f)};
@@ -101,10 +101,28 @@ TEST(MakeLight, FillsAndCompactsLargeShape) {
   EXPECT_FLOAT_EQ(std::ranges::fold_left(sh.weight, 0.f, std::plus{}), 150 * 150 * 255.f);
   EXPECT_DOUBLE_EQ(light.x, 100);
   EXPECT_DOUBLE_EQ(light.y, 100);
+  const Light center = MakeLight(img, Params{}, 1.0, 100, 100);
+  EXPECT_EQ(center.shape.w, 50);
+  EXPECT_DOUBLE_EQ(center.e, light.e);
+}
+
+// 手動の光源の強さは面積に比例する（大きな光源の中まで数える）
+TEST(MakeLight, EnergyGrowsWithArea) {
+  auto square = [](int side) {
+    RgbImage img{200, 200, std::vector<float>(200 * 200 * 3, 10.f)};
+    const auto px = img.view();
+    for (int y = 100 - side / 2; y < 100 + side / 2; y++)
+      for (int x = 100 - side / 2; x < 100 + side / 2; x++)
+        for (int c = 0; c < 3; c++)
+          px[y, x, c] = 250;
+    return MakeLight(img, Params{}, 1.0, 100, 100).e;
+  };
+  EXPECT_DOUBLE_EQ(square(40), 40 * 40 * 240.0);
+  EXPECT_DOUBLE_EQ(square(80), 4 * square(40));
 }
 
 // 除外した位置の近くの光源を外し、手動の光源を足す。強さは検出した最も強い光源を 1 にそろえ、
-// 外しても、ほかの光源の強さは変わらない。手動の光源は kMinManual 以上
+// 外しても、ほかの光源の強さは変わらない。手動の光源は kMinManual〜kMaxManual
 TEST(Arrange, AppliesEdits) {
   const std::vector<Light> detected = {
       {0,   0, 4, 1, 1, 1},
@@ -113,16 +131,23 @@ TEST(Arrange, AppliesEdits) {
   Params p;
   p.gap = 0;
   const Edits edits{
-      .added   = {{50, 50, 1, 1, 0, 0}, {70, 70, 0, 1, 1, 1}},
+      .added   = {{50, 50, 1, 1, 0, 0}, {70, 70, 0, 1, 1, 1}, {90, 90, 100, 1, 1, 1}},
       .removed = {{2, 0}}, // 光源 (0, 0) から 2px（5 単位以内）
   };
   const auto lights = Arrange(detected, p, 1.0, edits);
-  ASSERT_EQ(lights.size(), 3u);
+  ASSERT_EQ(lights.size(), 4u);
   EXPECT_DOUBLE_EQ(lights[0].x, 100);
   EXPECT_DOUBLE_EQ(lights[0].e, 0.5);
   EXPECT_DOUBLE_EQ(lights[1].x, 50);
   EXPECT_DOUBLE_EQ(lights[1].e, 0.25);
   EXPECT_DOUBLE_EQ(lights[2].e, kMinManual);
+  EXPECT_DOUBLE_EQ(lights[3].e, kMaxManual);
+
+  // 検出が 0 個なら、手動の光源のうち最も強いものが 1
+  const auto manual = Arrange({}, p, 1.0, edits);
+  ASSERT_EQ(manual.size(), 3u);
+  EXPECT_DOUBLE_EQ(manual[0].e, kMinManual); // 1 / 100 は下限より小さい
+  EXPECT_DOUBLE_EQ(manual[2].e, 1);
 }
 
 // 手動の光源の色は付近の最も明るい画素から取り、暗い場所なら白
@@ -138,7 +163,7 @@ TEST(MakeLight, TakesColorFromBrightestNearbyPixel) {
   EXPECT_FLOAT_EQ(dark.b, 1);
 }
 
-// 手動の光源の強さは検出と同じ測り方（検出された光源の上なら同じ値）。コントラストのない場所なら 0
+// 手動の光源の強さは、検出された光源の上なら検出とほぼ同じ値。明るさ未満の場所なら 0
 TEST(MakeLight, MeasuresEnergyLikeDetect) {
   RgbImage img{40, 40, std::vector<float>(40 * 40 * 3, 80.f)};
   const auto px = img.view();
@@ -152,7 +177,7 @@ TEST(MakeLight, MeasuresEnergyLikeDetect) {
   p.thr = 200, p.contrast = 160, p.size = 100;
   const auto lights = Detect(img, p, 1.0);
   ASSERT_EQ(lights.size(), 1u);
-  EXPECT_DOUBLE_EQ(MakeLight(img, p, 1.0, 11, 11).e, lights[0].e);
+  EXPECT_NEAR(MakeLight(img, p, 1.0, 11, 11).e, lights[0].e, lights[0].e * 0.05);
   const double faint = MakeLight(img, p, 1.0, 30, 30).e; // 暗い点は弱い光源になる
   EXPECT_GT(faint, 0);
   EXPECT_LT(faint, lights[0].e);
